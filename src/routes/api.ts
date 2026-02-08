@@ -64,12 +64,20 @@ adminApi.get('/gateway/status', async (c) => {
       active ??
       (await (async () => {
         try {
-          const processes = await sandbox.listProcesses();
-          const gateway = processes.filter((p) => {
-            const isGatewayProcess =
-              p.command.includes('start-moltbot.sh') || p.command.includes('clawdbot gateway');
-            const isCliCommand =
-              p.command.includes('clawdbot devices') || p.command.includes('clawdbot --version');
+            const processes = await sandbox.listProcesses();
+            const gateway = processes.filter((p) => {
+              const isGatewayProcess =
+              p.command.includes('start-moltbot.sh') ||
+              p.command.includes('clawdbot gateway') ||
+              // Compatibility: upstream may use OpenClaw naming
+              p.command.includes('start-openclaw.sh') ||
+              p.command.includes('openclaw gateway');
+              const isCliCommand =
+              p.command.includes('clawdbot devices') ||
+              p.command.includes('clawdbot --version') ||
+              p.command.includes('openclaw devices') ||
+              p.command.includes('openclaw --version') ||
+              p.command.includes('openclaw onboard');
             return isGatewayProcess && !isCliCommand;
           });
 
@@ -157,9 +165,17 @@ adminApi.get('/gateway/logs', async (c) => {
         const processes = await sandbox.listProcesses();
         const gateway = processes.filter((p) => {
           const isGatewayProcess =
-            p.command.includes('start-moltbot.sh') || p.command.includes('clawdbot gateway');
+            p.command.includes('start-moltbot.sh') ||
+            p.command.includes('clawdbot gateway') ||
+            // Compatibility: upstream may use OpenClaw naming
+            p.command.includes('start-openclaw.sh') ||
+            p.command.includes('openclaw gateway');
           const isCliCommand =
-            p.command.includes('clawdbot devices') || p.command.includes('clawdbot --version');
+            p.command.includes('clawdbot devices') ||
+            p.command.includes('clawdbot --version') ||
+            p.command.includes('openclaw devices') ||
+            p.command.includes('openclaw --version') ||
+            p.command.includes('openclaw onboard');
           return isGatewayProcess && !isCliCommand;
         });
 
@@ -203,7 +219,9 @@ adminApi.get('/devices', async (c) => {
 
     // Run moltbot CLI to list devices (CLI is still named clawdbot until upstream renames)
     // Must specify --url to connect to the gateway running in the same container
-    const proc = await sandbox.startProcess('clawdbot devices list --json --url ws://localhost:18789');
+    const token = c.env.MOLTBOT_GATEWAY_TOKEN;
+    const tokenArg = token ? ` --token ${token}` : '';
+    const proc = await sandbox.startProcess(`clawdbot devices list --json --url ws://localhost:18789${tokenArg}`);
     await waitForProcess(proc, CLI_TIMEOUT_MS);
 
     const logs = await proc.getLogs();
@@ -264,7 +282,12 @@ adminApi.get('/pairing/:channel', async (c) => {
 
   try {
     // Note: this is NOT "devices" pairing; it’s DM pairing (channels).
-    const proc = await sandbox.startProcess(`clawdbot pairing list ${channel} --json`);
+    await ensureMoltbotGateway(sandbox, c.env);
+    const token = c.env.MOLTBOT_GATEWAY_TOKEN;
+    const tokenArg = token ? ` --token ${token}` : '';
+    const proc = await sandbox.startProcess(
+      `clawdbot pairing list ${channel} --json --url ws://localhost:18789${tokenArg}`
+    );
     await waitForProcess(proc, CLI_TIMEOUT_MS);
 
     const logs = await proc.getLogs();
@@ -336,7 +359,10 @@ adminApi.post('/pairing/:channel/approve', async (c) => {
   }
 
   try {
-    const cmd = `clawdbot pairing approve ${channel} ${normalizedCode}${notify ? ' --notify' : ''}`;
+    await ensureMoltbotGateway(sandbox, c.env);
+    const token = c.env.MOLTBOT_GATEWAY_TOKEN;
+    const tokenArg = token ? ` --token ${token}` : '';
+    const cmd = `clawdbot pairing approve ${channel} ${normalizedCode}${notify ? ' --notify' : ''} --url ws://localhost:18789${tokenArg}`;
     const proc = await sandbox.startProcess(cmd);
     await waitForProcess(proc, CLI_TIMEOUT_MS);
 
@@ -373,7 +399,9 @@ adminApi.post('/devices/:requestId/approve', async (c) => {
     await ensureMoltbotGateway(sandbox, c.env);
 
     // Run moltbot CLI to approve the device (CLI is still named clawdbot)
-    const proc = await sandbox.startProcess(`clawdbot devices approve ${requestId} --url ws://localhost:18789`);
+    const token = c.env.MOLTBOT_GATEWAY_TOKEN;
+    const tokenArg = token ? ` --token ${token}` : '';
+    const proc = await sandbox.startProcess(`clawdbot devices approve ${requestId} --url ws://localhost:18789${tokenArg}`);
     await waitForProcess(proc, CLI_TIMEOUT_MS);
 
     const logs = await proc.getLogs();
@@ -405,7 +433,9 @@ adminApi.post('/devices/approve-all', async (c) => {
     await ensureMoltbotGateway(sandbox, c.env);
 
     // First, get the list of pending devices (CLI is still named clawdbot)
-    const listProc = await sandbox.startProcess('clawdbot devices list --json --url ws://localhost:18789');
+    const token = c.env.MOLTBOT_GATEWAY_TOKEN;
+    const tokenArg = token ? ` --token ${token}` : '';
+    const listProc = await sandbox.startProcess(`clawdbot devices list --json --url ws://localhost:18789${tokenArg}`);
     await waitForProcess(listProc, CLI_TIMEOUT_MS);
 
     const listLogs = await listProc.getLogs();
@@ -432,7 +462,9 @@ adminApi.post('/devices/approve-all', async (c) => {
 
     for (const device of pending) {
       try {
-        const approveProc = await sandbox.startProcess(`clawdbot devices approve ${device.requestId} --url ws://localhost:18789`);
+        const approveProc = await sandbox.startProcess(
+          `clawdbot devices approve ${device.requestId} --url ws://localhost:18789${tokenArg}`
+        );
         await waitForProcess(approveProc, CLI_TIMEOUT_MS);
 
         const approveLogs = await approveProc.getLogs();

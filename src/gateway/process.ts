@@ -38,8 +38,18 @@ async function findMostRecentGatewayProcess(sandbox: Sandbox): Promise<Process |
   try {
     const processes = await sandbox.listProcesses();
     const gateway = processes.filter((p) => {
-      const isGatewayProcess = p.command.includes('start-moltbot.sh') || p.command.includes('clawdbot gateway');
-      const isCliCommand = p.command.includes('clawdbot devices') || p.command.includes('clawdbot --version');
+      const isGatewayProcess =
+        p.command.includes('start-moltbot.sh') ||
+        p.command.includes('clawdbot gateway') ||
+        // Compatibility: upstream may use OpenClaw naming
+        p.command.includes('start-openclaw.sh') ||
+        p.command.includes('openclaw gateway');
+      const isCliCommand =
+        p.command.includes('clawdbot devices') ||
+        p.command.includes('clawdbot --version') ||
+        p.command.includes('openclaw devices') ||
+        p.command.includes('openclaw --version') ||
+        p.command.includes('openclaw onboard');
       return isGatewayProcess && !isCliCommand;
     });
 
@@ -102,10 +112,16 @@ export async function findExistingMoltbotProcess(sandbox: Sandbox): Promise<Proc
       // Note: CLI is still named "clawdbot" until upstream renames it
       const isGatewayProcess = 
         proc.command.includes('start-moltbot.sh') ||
-        proc.command.includes('clawdbot gateway');
+        proc.command.includes('clawdbot gateway') ||
+        // Compatibility: upstream may use OpenClaw naming
+        proc.command.includes('start-openclaw.sh') ||
+        proc.command.includes('openclaw gateway');
       const isCliCommand = 
         proc.command.includes('clawdbot devices') ||
-        proc.command.includes('clawdbot --version');
+        proc.command.includes('clawdbot --version') ||
+        proc.command.includes('openclaw devices') ||
+        proc.command.includes('openclaw --version') ||
+        proc.command.includes('openclaw onboard');
       
       if (isGatewayProcess && !isCliCommand) {
         if (proc.status === 'starting' || proc.status === 'running') {

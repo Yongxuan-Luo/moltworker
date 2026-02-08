@@ -145,6 +145,23 @@ describe('buildEnvVars', () => {
     const env = createMockEnv({ MOLTBOT_GATEWAY_TOKEN: 'my-token' });
     const result = buildEnvVars(env);
     expect(result.CLAWDBOT_GATEWAY_TOKEN).toBe('my-token');
+    expect(result.OPENCLAW_GATEWAY_TOKEN).toBe('my-token');
+  });
+
+  it('passes native Cloudflare AI Gateway vars through when set', () => {
+    const env = createMockEnv({
+      CLOUDFLARE_AI_GATEWAY_API_KEY: 'sk-cf-gw',
+      CF_AI_GATEWAY_ACCOUNT_ID: 'acc',
+      CF_AI_GATEWAY_GATEWAY_ID: 'gw',
+      CF_AI_GATEWAY_MODEL: 'openai/gpt-4o-mini',
+      CF_ACCOUNT_ID: 'cf-account',
+    });
+    const result = buildEnvVars(env);
+    expect(result.CLOUDFLARE_AI_GATEWAY_API_KEY).toBe('sk-cf-gw');
+    expect(result.CF_AI_GATEWAY_ACCOUNT_ID).toBe('acc');
+    expect(result.CF_AI_GATEWAY_GATEWAY_ID).toBe('gw');
+    expect(result.CF_AI_GATEWAY_MODEL).toBe('openai/gpt-4o-mini');
+    expect(result.CF_ACCOUNT_ID).toBe('cf-account');
   });
 
   it('includes all channel tokens when set', () => {
@@ -174,6 +191,7 @@ describe('buildEnvVars', () => {
     const result = buildEnvVars(env);
     
     expect(result.CLAWDBOT_DEV_MODE).toBe('true');
+    expect(result.OPENCLAW_DEV_MODE).toBe('true');
     expect(result.CLAWDBOT_BIND_MODE).toBe('lan');
   });
 
@@ -188,6 +206,7 @@ describe('buildEnvVars', () => {
     expect(result).toEqual({
       ANTHROPIC_API_KEY: 'sk-key',
       CLAWDBOT_GATEWAY_TOKEN: 'token',
+      OPENCLAW_GATEWAY_TOKEN: 'token',
       TELEGRAM_BOT_TOKEN: 'tg',
     });
   });

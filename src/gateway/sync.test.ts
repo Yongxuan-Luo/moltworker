@@ -1,11 +1,11 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { syncToR2 } from './sync';
-import { 
-  createMockEnv, 
-  createMockEnvWithR2, 
-  createMockProcess, 
-  createMockSandbox, 
-  suppressConsole 
+import {
+  createMockEnv,
+  createMockEnvWithR2,
+  createMockProcess,
+  createMockSandbox,
+  suppressConsole,
 } from '../test-utils';
 
 describe('syncToR2', () => {
@@ -28,7 +28,7 @@ describe('syncToR2', () => {
       const { sandbox, startProcessMock, mountBucketMock } = createMockSandbox();
       startProcessMock.mockResolvedValue(createMockProcess(''));
       mountBucketMock.mockRejectedValue(new Error('Mount failed'));
-      
+
       const env = createMockEnvWithR2();
 
       const result = await syncToR2(sandbox, env);
@@ -44,7 +44,7 @@ describe('syncToR2', () => {
       startProcessMock
         .mockResolvedValueOnce(createMockProcess('s3fs on /data/moltbot type fuse.s3fs\n'))
         .mockResolvedValueOnce(createMockProcess('')); // No "ok" output
-      
+
       const env = createMockEnvWithR2();
 
       const result = await syncToR2(sandbox, env);
@@ -60,14 +60,14 @@ describe('syncToR2', () => {
     it('returns success when sync completes', async () => {
       const { sandbox, startProcessMock } = createMockSandbox();
       const timestamp = '2026-01-27T12:00:00+00:00';
-      
+
       // Calls: mount check, sanity check, rsync, cat timestamp
       startProcessMock
         .mockResolvedValueOnce(createMockProcess('s3fs on /data/moltbot type fuse.s3fs\n'))
         .mockResolvedValueOnce(createMockProcess('ok'))
         .mockResolvedValueOnce(createMockProcess(''))
         .mockResolvedValueOnce(createMockProcess(timestamp));
-      
+
       const env = createMockEnvWithR2();
 
       const result = await syncToR2(sandbox, env);
@@ -78,14 +78,14 @@ describe('syncToR2', () => {
 
     it('returns error when rsync fails (no timestamp created)', async () => {
       const { sandbox, startProcessMock } = createMockSandbox();
-      
+
       // Calls: mount check, sanity check, rsync (fails), cat timestamp (empty)
       startProcessMock
         .mockResolvedValueOnce(createMockProcess('s3fs on /data/moltbot type fuse.s3fs\n'))
         .mockResolvedValueOnce(createMockProcess('ok'))
         .mockResolvedValueOnce(createMockProcess('', { exitCode: 1 }))
         .mockResolvedValueOnce(createMockProcess(''));
-      
+
       const env = createMockEnvWithR2();
 
       const result = await syncToR2(sandbox, env);
@@ -97,13 +97,13 @@ describe('syncToR2', () => {
     it('verifies rsync command is called with correct flags', async () => {
       const { sandbox, startProcessMock } = createMockSandbox();
       const timestamp = '2026-01-27T12:00:00+00:00';
-      
+
       startProcessMock
         .mockResolvedValueOnce(createMockProcess('s3fs on /data/moltbot type fuse.s3fs\n'))
         .mockResolvedValueOnce(createMockProcess('ok'))
         .mockResolvedValueOnce(createMockProcess(''))
         .mockResolvedValueOnce(createMockProcess(timestamp));
-      
+
       const env = createMockEnvWithR2();
 
       await syncToR2(sandbox, env);

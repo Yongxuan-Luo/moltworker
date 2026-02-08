@@ -7,7 +7,13 @@ export interface MoltbotEnv {
   Sandbox: DurableObjectNamespace<Sandbox>;
   ASSETS: Fetcher; // Assets binding for admin UI static files
   MOLTBOT_BUCKET: R2Bucket; // R2 bucket for persistent storage
-  // AI Gateway configuration (preferred)
+  // Cloudflare AI Gateway configuration (native, preferred when available)
+  CF_AI_GATEWAY_ACCOUNT_ID?: string; // Cloudflare account ID for AI Gateway
+  CF_AI_GATEWAY_GATEWAY_ID?: string; // AI Gateway ID
+  CLOUDFLARE_AI_GATEWAY_API_KEY?: string; // API key for requests through the gateway
+  CF_AI_GATEWAY_MODEL?: string; // Optional default model: "provider/model-id" (used by OpenClaw onboarding flows)
+
+  // AI Gateway configuration (legacy, still supported)
   AI_GATEWAY_API_KEY?: string; // API key for the provider configured in AI Gateway
   AI_GATEWAY_BASE_URL?: string; // AI Gateway URL (e.g., .../{gateway_id}/anthropic, .../{gateway_id}/openai, .../{gateway_id}/openrouter)
   AI_GATEWAY_AUTH_TOKEN?: string; // Optional token for AI Gateway "Authenticated Gateway" (sent as cf-aig-authorization)

@@ -9,6 +9,13 @@ import type { MoltbotEnv } from '../types';
 export function buildEnvVars(env: MoltbotEnv): Record<string, string> {
   const envVars: Record<string, string> = {};
 
+  // Cloudflare AI Gateway (native) vars are passed through for OpenClaw/OpenAI-compatible tooling.
+  if (env.CLOUDFLARE_AI_GATEWAY_API_KEY) envVars.CLOUDFLARE_AI_GATEWAY_API_KEY = env.CLOUDFLARE_AI_GATEWAY_API_KEY;
+  if (env.CF_AI_GATEWAY_ACCOUNT_ID) envVars.CF_AI_GATEWAY_ACCOUNT_ID = env.CF_AI_GATEWAY_ACCOUNT_ID;
+  if (env.CF_AI_GATEWAY_GATEWAY_ID) envVars.CF_AI_GATEWAY_GATEWAY_ID = env.CF_AI_GATEWAY_GATEWAY_ID;
+  if (env.CF_AI_GATEWAY_MODEL) envVars.CF_AI_GATEWAY_MODEL = env.CF_AI_GATEWAY_MODEL;
+  if (env.CF_ACCOUNT_ID) envVars.CF_ACCOUNT_ID = env.CF_ACCOUNT_ID;
+
   // Normalize the base URL by removing trailing slashes
   const normalizedBaseUrl = env.AI_GATEWAY_BASE_URL?.replace(/\/+$/, '');
   const isCustomProvider = /\/custom-[^/]+$/.test(normalizedBaseUrl ?? '');
@@ -74,7 +81,10 @@ export function buildEnvVars(env: MoltbotEnv): Record<string, string> {
   }
   // Map MOLTBOT_GATEWAY_TOKEN to CLAWDBOT_GATEWAY_TOKEN (container expects this name)
   if (env.MOLTBOT_GATEWAY_TOKEN) envVars.CLAWDBOT_GATEWAY_TOKEN = env.MOLTBOT_GATEWAY_TOKEN;
+  // Compatibility: OpenClaw uses OPENCLAW_* env vars.
+  if (env.MOLTBOT_GATEWAY_TOKEN) envVars.OPENCLAW_GATEWAY_TOKEN = env.MOLTBOT_GATEWAY_TOKEN;
   if (env.DEV_MODE) envVars.CLAWDBOT_DEV_MODE = env.DEV_MODE; // Pass DEV_MODE as CLAWDBOT_DEV_MODE to container
+  if (env.DEV_MODE) envVars.OPENCLAW_DEV_MODE = env.DEV_MODE;
   if (env.CLAWDBOT_BIND_MODE) envVars.CLAWDBOT_BIND_MODE = env.CLAWDBOT_BIND_MODE;
   if (env.TELEGRAM_BOT_TOKEN) envVars.TELEGRAM_BOT_TOKEN = env.TELEGRAM_BOT_TOKEN;
   if (env.TELEGRAM_DM_POLICY) envVars.TELEGRAM_DM_POLICY = env.TELEGRAM_DM_POLICY;
