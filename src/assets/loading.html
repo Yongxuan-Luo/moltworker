@@ -108,6 +108,40 @@
       border-radius: 8px;
       display: none;
     }
+
+    .actions {
+      margin-top: 16px;
+      display: none;
+      gap: 12px;
+      justify-content: center;
+    }
+
+    .btn {
+      appearance: none;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      background: rgba(255, 255, 255, 0.06);
+      color: #ffffff;
+      padding: 10px 14px;
+      border-radius: 10px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+    }
+
+    .btn:hover:not(:disabled) {
+      background: rgba(255, 255, 255, 0.1);
+      border-color: rgba(255, 255, 255, 0.22);
+    }
+
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .btn-danger {
+      border-color: rgba(248, 113, 113, 0.4);
+      background: rgba(248, 113, 113, 0.12);
+    }
     
     .ready {
       color: #4ade80;
@@ -126,6 +160,10 @@
     <p class="status" id="status">Starting container...</p>
     
     <p class="error" id="error"></p>
+
+    <div class="actions" id="actions">
+      <button class="btn btn-danger" id="resetBtn">Reset Sandbox</button>
+    </div>
     
     <p class="info">This usually takes 1-2 minutes on cold start</p>
   </div>
@@ -134,15 +172,41 @@
     const statusEl = document.getElementById('status');
     const titleEl = document.getElementById('title');
     const errorEl = document.getElementById('error');
+    const actionsEl = document.getElementById('actions');
+    const resetBtn = document.getElementById('resetBtn');
     let pollCount = 0;
     let consecutiveErrors = 0;
     const maxConsecutiveErrors = 5;
+
+    async function resetSandbox() {
+      if (!confirm('This will destroy the sandbox container (kills processes + deletes files). Continue?')) return;
+      resetBtn.disabled = true;
+      statusEl.textContent = 'Resetting sandbox...';
+      errorEl.style.display = 'none';
+
+      try {
+        const resp = await fetch('/api/admin/sandbox/destroy', { method: 'POST' });
+        const data = await resp.json();
+        if (!resp.ok || !data.success) {
+          throw new Error(data.error || `Reset failed (${resp.status})`);
+        }
+
+        statusEl.textContent = 'Sandbox reset. Reloading...';
+        setTimeout(() => window.location.reload(), 500);
+      } catch (err) {
+        errorEl.textContent = err instanceof Error ? err.message : 'Reset failed';
+        errorEl.style.display = 'block';
+        resetBtn.disabled = false;
+      }
+    }
+
+    resetBtn.addEventListener('click', resetSandbox);
     
     async function checkStatus() {
       pollCount++;
       
       try {
-        const response = await fetch('/api/status');
+        const response = await fetch('/api/admin/gateway/status');
         const data = await response.json();
         consecutiveErrors = 0;
         
@@ -160,10 +224,18 @@
         }
         
         // Update status message based on state
-        if (data.status === 'not_running') {
+        if (data.status === 'starting') {
           statusEl.textContent = 'Container is starting up...';
         } else if (data.status === 'not_responding') {
           statusEl.textContent = 'Container started, waiting for gateway...';
+          // If we're stuck for a while, offer a reset button.
+          if (pollCount >= 45) actionsEl.style.display = 'flex';
+        } else if (data.status === 'error') {
+          statusEl.textContent = 'Startup failed';
+          errorEl.textContent = data.error || 'Unknown error';
+          errorEl.style.display = 'block';
+          actionsEl.style.display = 'flex';
+          return;
         } else {
           statusEl.textContent = 'Checking status... (poll #' + pollCount + ')';
         }

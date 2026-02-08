@@ -61,6 +61,13 @@ export async function mountR2Storage(sandbox: Sandbox, env: MoltbotEnv): Promise
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
     console.log('R2 mount error:', errorMessage);
+
+    // Race tolerance: concurrent requests can mount the same path between our check and mountBucket().
+    // Treat "already in use" as success.
+    if (errorMessage.includes('Mount path') && errorMessage.includes('already in use')) {
+      console.log('R2 mount path already in use; assuming bucket is mounted');
+      return true;
+    }
     
     // Check again if it's mounted - the error might be misleading
     if (await isR2Mounted(sandbox)) {

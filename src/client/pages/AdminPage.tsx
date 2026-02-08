@@ -3,7 +3,13 @@ import {
   listDevices,
   approveDevice,
   approveAllDevices,
+  listPairingRequests,
+  approvePairingCode,
+  listSkills,
+  getSkill,
+  setSkillEnabled,
   restartGateway,
+  destroySandbox,
   getStorageStatus,
   triggerSync,
   AuthError,
@@ -11,6 +17,10 @@ import {
   type PairedDevice,
   type DeviceListResponse,
   type StorageStatusResponse,
+  type PairingRequest,
+  type SkillsListResponse,
+  type SkillSummary,
+  type SkillDetailResponse,
 } from '../api'
 import './AdminPage.css'
 
@@ -19,14 +29,49 @@ function ButtonSpinner() {
   return <span className="btn-spinner" />
 }
 
+type SkillStatusLike = {
+  eligible: boolean
+  disabled: boolean
+  blockedByAllowlist: boolean
+}
+
+function formatSkillStatus(skill: SkillStatusLike): { label: string; className: string } {
+  if (skill.eligible) return { label: 'Ready', className: 'ready' }
+  if (skill.disabled) return { label: 'Disabled', className: 'disabled' }
+  if (skill.blockedByAllowlist) return { label: 'Blocked', className: 'blocked' }
+  return { label: 'Missing', className: 'missing' }
+}
+
+function countMissing(missing: SkillSummary['missing']): number {
+  return (
+    (missing?.bins?.length ?? 0) +
+    (missing?.anyBins?.length ?? 0) +
+    (missing?.env?.length ?? 0) +
+    (missing?.config?.length ?? 0) +
+    (missing?.os?.length ?? 0)
+  )
+}
+
 export default function AdminPage() {
   const [pending, setPending] = useState<PendingDevice[]>([])
   const [paired, setPaired] = useState<PairedDevice[]>([])
   const [storageStatus, setStorageStatus] = useState<StorageStatusResponse | null>(null)
+  const [skillsReport, setSkillsReport] = useState<SkillsListResponse | null>(null)
+  const [skillsLoading, setSkillsLoading] = useState(false)
+  const [skillDetailLoading, setSkillDetailLoading] = useState(false)
+  const [skillToggleLoading, setSkillToggleLoading] = useState(false)
+  const [selectedSkillName, setSelectedSkillName] = useState<string | null>(null)
+  const [selectedSkill, setSelectedSkill] = useState<SkillDetailResponse | null>(null)
+  const [pairingChannel, setPairingChannel] = useState('telegram')
+  const [pairingRequests, setPairingRequests] = useState<PairingRequest[]>([])
+  const [pairingCode, setPairingCode] = useState('')
+  const [pairingNotify, setPairingNotify] = useState(true)
+  const [pairingLoading, setPairingLoading] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [actionInProgress, setActionInProgress] = useState<string | null>(null)
   const [restartInProgress, setRestartInProgress] = useState(false)
+  const [destroyInProgress, setDestroyInProgress] = useState(false)
   const [syncInProgress, setSyncInProgress] = useState(false)
 
   const fetchDevices = useCallback(async () => {
@@ -62,10 +107,83 @@ export default function AdminPage() {
     }
   }, [])
 
+  const fetchSkills = useCallback(async () => {
+    setSkillsLoading(true)
+    try {
+      const data = await listSkills()
+      setSkillsReport(data)
+    } catch (err) {
+      if (err instanceof AuthError) {
+        setError('Authentication required. Please log in via Cloudflare Access.')
+      } else {
+        console.error('Failed to fetch skills:', err)
+      }
+    } finally {
+      setSkillsLoading(false)
+    }
+  }, [])
+
+  const fetchSkillDetail = useCallback(async (name: string) => {
+    setSelectedSkillName(name)
+    setSkillDetailLoading(true)
+    try {
+      const detail = await getSkill(name)
+      setSelectedSkill(detail)
+    } catch (err) {
+      if (err instanceof AuthError) {
+        setError('Authentication required. Please log in via Cloudflare Access.')
+      } else {
+        setError(err instanceof Error ? err.message : 'Failed to fetch skill')
+      }
+      setSelectedSkill(null)
+    } finally {
+      setSkillDetailLoading(false)
+    }
+  }, [])
+
+  const handleSetSkillEnabled = useCallback(
+    async (enabled: boolean) => {
+      const skillKey = selectedSkill?.skill?.skillKey || selectedSkill?.skill?.name
+      const refreshName = selectedSkill?.skill?.name
+      if (!skillKey || !refreshName) return
+
+      setSkillToggleLoading(true)
+      try {
+        const result = await setSkillEnabled(skillKey, enabled)
+        if (!result.success) {
+          setError(result.error || 'Failed to update skill')
+          return
+        }
+        setError(null)
+        await fetchSkills()
+        await fetchSkillDetail(refreshName)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to update skill')
+      } finally {
+        setSkillToggleLoading(false)
+      }
+    },
+    [selectedSkill, fetchSkills, fetchSkillDetail]
+  )
+
+  const fetchPairing = useCallback(async () => {
+    setPairingLoading(true)
+    try {
+      const data = await listPairingRequests(pairingChannel)
+      setPairingRequests(data.requests || [])
+    } catch (err) {
+      console.error('Failed to fetch pairing requests:', err)
+    } finally {
+      setPairingLoading(false)
+    }
+  }, [pairingChannel])
+
   useEffect(() => {
     fetchDevices()
     fetchStorageStatus()
-  }, [fetchDevices, fetchStorageStatus])
+    fetchSkills()
+    fetchPairing()
+  }, [fetchDevices, fetchStorageStatus, fetchSkills, fetchPairing])
 
   const handleApprove = async (requestId: string) => {
     setActionInProgress(requestId)
@@ -124,6 +242,32 @@ export default function AdminPage() {
     }
   }
 
+  const handleDestroySandbox = async () => {
+    if (
+      !confirm(
+        'This will destroy the sandbox container (kills all processes and deletes all files).\n\nIf R2 is NOT configured, your moltbot config and paired devices will be lost.\n\nContinue?'
+      )
+    ) {
+      return
+    }
+
+    setDestroyInProgress(true)
+    try {
+      const result = await destroySandbox()
+      if (result.success) {
+        setError(null)
+        alert('Sandbox destroyed. Reloading to recreate the container...')
+        window.location.reload()
+      } else {
+        setError(result.error || 'Failed to destroy sandbox')
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to destroy sandbox')
+    } finally {
+      setDestroyInProgress(false)
+    }
+  }
+
   const handleSync = async () => {
     setSyncInProgress(true)
     try {
@@ -139,6 +283,24 @@ export default function AdminPage() {
       setError(err instanceof Error ? err.message : 'Failed to sync')
     } finally {
       setSyncInProgress(false)
+    }
+  }
+
+  const handleApprovePairing = async (code: string) => {
+    if (!code.trim()) return
+    setActionInProgress(`pairing:${code}`)
+    try {
+      const result = await approvePairingCode(pairingChannel, code.trim(), { notify: pairingNotify })
+      if (!result.success) {
+        setError(result.error || result.stderr || 'Failed to approve pairing code')
+        return
+      }
+      setPairingCode('')
+      await fetchPairing()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to approve pairing code')
+    } finally {
+      setActionInProgress(null)
     }
   }
 
@@ -167,6 +329,21 @@ export default function AdminPage() {
     const days = Math.floor(hours / 24)
     return `${days}d ago`
   }
+
+  const skills: SkillSummary[] = skillsReport?.skills ?? []
+  const skillsReady = skills.filter((s) => s.eligible).length
+  const sortedSkills = [...skills].sort((a, b) => {
+    const weight = (s: SkillSummary) => {
+      if (s.eligible) return 0
+      if (!s.eligible && !s.disabled && !s.blockedByAllowlist) return 1
+      if (s.disabled) return 2
+      if (s.blockedByAllowlist) return 3
+      return 4
+    }
+    const diff = weight(a) - weight(b)
+    if (diff !== 0) return diff
+    return a.name.localeCompare(b.name)
+  })
 
   return (
     <div className="devices-page">
@@ -221,19 +398,266 @@ export default function AdminPage() {
       <section className="devices-section gateway-section">
         <div className="section-header">
           <h2>Gateway Controls</h2>
-          <button
-            className="btn btn-danger"
-            onClick={handleRestartGateway}
-            disabled={restartInProgress}
-          >
-            {restartInProgress && <ButtonSpinner />}
-            {restartInProgress ? 'Restarting...' : 'Restart Gateway'}
-          </button>
+          <div className="header-actions">
+            <button
+              className="btn btn-secondary"
+              onClick={handleRestartGateway}
+              disabled={restartInProgress || destroyInProgress}
+            >
+              {restartInProgress && <ButtonSpinner />}
+              {restartInProgress ? 'Restarting...' : 'Restart Gateway'}
+            </button>
+            <button
+              className="btn btn-danger"
+              onClick={handleDestroySandbox}
+              disabled={destroyInProgress || restartInProgress}
+            >
+              {destroyInProgress && <ButtonSpinner />}
+              {destroyInProgress ? 'Resetting...' : 'Reset Sandbox'}
+            </button>
+          </div>
         </div>
         <p className="hint">
-          Restart the gateway to apply configuration changes or recover from errors.
-          All connected clients will be temporarily disconnected.
+          Restart the gateway to apply configuration changes or recover from errors. If the container image/startup script is stuck
+          after a deploy, use "Reset Sandbox" to recreate the container.
         </p>
+      </section>
+
+      <section className="devices-section skills-section">
+        <div className="section-header">
+          <div className="skills-header-title">
+            <h2>Skills</h2>
+            <span className="skills-count">
+              {skillsLoading && skills.length === 0 ? 'Loading…' : `${skillsReady}/${skills.length} ready`}
+            </span>
+          </div>
+          <div className="header-actions">
+            <a className="btn btn-secondary" href="/" target="_blank" rel="noopener noreferrer">
+              Open Control UI
+            </a>
+            <button className="btn btn-secondary" onClick={fetchSkills} disabled={skillsLoading}>
+              {skillsLoading ? 'Refreshing...' : 'Refresh'}
+            </button>
+          </div>
+        </div>
+        <p className="hint">
+          Skills are loaded by <code>clawdbot</code> from workspace, managed, and bundled sources (workspace wins on conflicts). Use the
+          Control UI “Skills” page for full management; this panel focuses on diagnostics + quick enable/disable.
+        </p>
+
+        {skillsLoading && skills.length === 0 ? (
+          <div className="loading">
+            <div className="spinner"></div>
+            <p>Loading skills...</p>
+          </div>
+        ) : skills.length === 0 ? (
+          <div className="empty-state">
+            <p>No skills found</p>
+            <p className="hint">If you just deployed new skills, try "Reset Sandbox" once.</p>
+          </div>
+        ) : (
+          <div className="skills-layout">
+            <div className="skills-list">
+              {sortedSkills.map((skill) => {
+                const isActive = selectedSkillName === skill.name
+                const isLoading = skillDetailLoading && isActive
+                const status = formatSkillStatus(skill)
+                const missingCount = countMissing(skill.missing)
+                return (
+                  <button
+                    key={skill.name}
+                    className={`skill-item ${isActive ? 'active' : ''}`}
+                    onClick={() => fetchSkillDetail(skill.name)}
+                    disabled={isLoading}
+                    title={skill.name}
+                  >
+                    {isLoading && <ButtonSpinner />}
+                    <div className="skill-item-text">
+                      <div className="skill-item-row">
+                        <span className="skill-name">
+                          {(skill.emoji ? `${skill.emoji} ` : '') + skill.name}
+                        </span>
+                        <span className={`skill-status-badge ${status.className}`}>{status.label}</span>
+                      </div>
+                      <div className="skill-description">{skill.description}</div>
+                      <div className="skill-meta">
+                        {skill.source && <span className="skill-meta-item">{skill.source}</span>}
+                        {missingCount > 0 && <span className="skill-meta-item missing">{missingCount} missing</span>}
+                      </div>
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+
+            <div className="skills-detail">
+              {!selectedSkill ? (
+                <div className="empty-state">
+                  <p>Select a skill to view details</p>
+                </div>
+              ) : (
+                <>
+                  <div className="skills-detail-header">
+                    <div className="skills-detail-title">
+                      <h3>
+                        {(selectedSkill.skill.emoji ? `${selectedSkill.skill.emoji} ` : '') + selectedSkill.skill.name}
+                      </h3>
+                      <div className="skills-detail-badges">
+                        <span className={`skill-status-badge ${formatSkillStatus(selectedSkill.skill).className}`}>
+                          {formatSkillStatus(selectedSkill.skill).label}
+                        </span>
+                        {selectedSkill.truncated && <span className="skill-badge">SKILL.md truncated</span>}
+                      </div>
+                    </div>
+                    <div className="skills-detail-actions">
+                      <button
+                        className={`btn btn-sm ${selectedSkill.skill.disabled ? 'btn-success' : 'btn-danger'}`}
+                        onClick={() => handleSetSkillEnabled(selectedSkill.skill.disabled)}
+                        disabled={skillToggleLoading || selectedSkill.skill.blockedByAllowlist}
+                        title={
+                          selectedSkill.skill.blockedByAllowlist
+                            ? 'Blocked by allowlist (update skills.allowBundled in config)'
+                            : undefined
+                        }
+                      >
+                        {skillToggleLoading && <ButtonSpinner />}
+                        {selectedSkill.skill.disabled ? 'Enable' : 'Disable'}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="skills-detail-body">
+                    <div className="skills-meta-block">
+                      <div className="subheading">Details</div>
+                      <div className="skill-details">
+                        <div className="detail-row">
+                          <span className="label">Source:</span>
+                          <span className="value">{selectedSkill.skill.source || '—'}</span>
+                        </div>
+                        <div className="detail-row">
+                          <span className="label">Skill key:</span>
+                          <span className="value">{selectedSkill.skill.skillKey || selectedSkill.skill.name}</span>
+                        </div>
+                        {selectedSkill.skill.primaryEnv && (
+                          <div className="detail-row">
+                            <span className="label">Primary env:</span>
+                            <span className="value">
+                              <code>{selectedSkill.skill.primaryEnv}</code>
+                            </span>
+                          </div>
+                        )}
+                        {selectedSkill.skill.homepage && (
+                          <div className="detail-row">
+                            <span className="label">Homepage:</span>
+                            <span className="value">
+                              <a href={selectedSkill.skill.homepage} target="_blank" rel="noopener noreferrer">
+                                {selectedSkill.skill.homepage}
+                              </a>
+                            </span>
+                          </div>
+                        )}
+                        {selectedSkill.skill.baseDir && (
+                          <div className="detail-row">
+                            <span className="label">Base dir:</span>
+                            <span className="value">
+                              <code>{selectedSkill.skill.baseDir}</code>
+                            </span>
+                          </div>
+                        )}
+                        {selectedSkill.skill.filePath && (
+                          <div className="detail-row">
+                            <span className="label">SKILL.md:</span>
+                            <span className="value">
+                              <code>{selectedSkill.skill.filePath}</code>
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="skills-meta-block">
+                      <div className="subheading">Requirements</div>
+                      {selectedSkill.skill.eligible ? (
+                        <p className="hint">All requirements satisfied.</p>
+                      ) : selectedSkill.skill.disabled ? (
+                        <p className="hint">This skill is disabled in config.</p>
+                      ) : selectedSkill.skill.blockedByAllowlist ? (
+                        <p className="hint">
+                          This bundled skill is blocked by allowlist. Update <code>skills.allowBundled</code> in config to allow it.
+                        </p>
+                      ) : (
+                        <div className="skill-missing-list">
+                          {selectedSkill.skill.missing.bins.length > 0 && (
+                            <div className="skill-missing-row">
+                              <span className="skill-missing-label">bins</span>
+                              <span className="skill-missing-value">
+                                {selectedSkill.skill.missing.bins.map((b) => (
+                                  <code key={b}>{b}</code>
+                                ))}
+                              </span>
+                            </div>
+                          )}
+                          {selectedSkill.skill.missing.anyBins.length > 0 && (
+                            <div className="skill-missing-row">
+                              <span className="skill-missing-label">anyBins</span>
+                              <span className="skill-missing-value">
+                                {selectedSkill.skill.missing.anyBins.map((b) => (
+                                  <code key={b}>{b}</code>
+                                ))}
+                              </span>
+                            </div>
+                          )}
+                          {selectedSkill.skill.missing.env.length > 0 && (
+                            <div className="skill-missing-row">
+                              <span className="skill-missing-label">env</span>
+                              <span className="skill-missing-value">
+                                {selectedSkill.skill.missing.env.map((e) => (
+                                  <code key={e}>{e}</code>
+                                ))}
+                              </span>
+                            </div>
+                          )}
+                          {selectedSkill.skill.missing.config.length > 0 && (
+                            <div className="skill-missing-row">
+                              <span className="skill-missing-label">config</span>
+                              <span className="skill-missing-value">
+                                {selectedSkill.skill.missing.config.map((p) => (
+                                  <code key={p}>{p}</code>
+                                ))}
+                              </span>
+                            </div>
+                          )}
+                          {selectedSkill.skill.missing.os.length > 0 && (
+                            <div className="skill-missing-row">
+                              <span className="skill-missing-label">os</span>
+                              <span className="skill-missing-value">
+                                {selectedSkill.skill.missing.os.map((os) => (
+                                  <code key={os}>{os}</code>
+                                ))}
+                              </span>
+                            </div>
+                          )}
+                          {countMissing(selectedSkill.skill.missing) === 0 && (
+                            <p className="hint">Missing requirements are not available for this skill.</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="skills-doc">
+                      <div className="subheading">SKILL.md</div>
+                      {selectedSkill.skillMd ? (
+                        <pre className="skill-md">{selectedSkill.skillMd}</pre>
+                      ) : (
+                        <p className="hint">No SKILL.md content found for this skill.</p>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
       </section>
 
       {loading ? (
@@ -243,6 +667,105 @@ export default function AdminPage() {
         </div>
       ) : (
         <>
+          <section className="devices-section">
+            <div className="section-header">
+              <h2>Channel DM Pairing</h2>
+              <div className="header-actions">
+                <button className="btn btn-secondary" onClick={fetchPairing} disabled={pairingLoading}>
+                  {pairingLoading ? 'Refreshing...' : 'Refresh'}
+                </button>
+              </div>
+            </div>
+            <p className="hint">
+              This is for channel DM access (the pairing code you see in Telegram/Discord). It is different from “Devices” pairing.
+            </p>
+
+            <div className="gateway-controls">
+              <div className="control-row">
+                <label className="label" htmlFor="pairing-channel">Channel</label>
+                <select
+                  id="pairing-channel"
+                  value={pairingChannel}
+                  onChange={(e) => setPairingChannel(e.target.value)}
+                  disabled={pairingLoading}
+                >
+                  <option value="telegram">Telegram</option>
+                  <option value="discord">Discord</option>
+                  <option value="slack">Slack</option>
+                </select>
+              </div>
+              <div className="control-row">
+                <label className="label" htmlFor="pairing-code">Pairing code</label>
+                <input
+                  id="pairing-code"
+                  value={pairingCode}
+                  onChange={(e) => setPairingCode(e.target.value)}
+                  placeholder="e.g. 123456"
+                />
+              </div>
+              <div className="control-row">
+                <label className="label">
+                  <input
+                    type="checkbox"
+                    checked={pairingNotify}
+                    onChange={(e) => setPairingNotify(e.target.checked)}
+                  />{' '}
+                  Notify requester
+                </label>
+                <button
+                  className="btn btn-primary"
+                  onClick={() => handleApprovePairing(pairingCode)}
+                  disabled={!pairingCode.trim() || actionInProgress?.startsWith('pairing:')}
+                >
+                  {actionInProgress?.startsWith('pairing:') && <ButtonSpinner />}
+                  Approve
+                </button>
+              </div>
+            </div>
+
+            {pairingRequests.length === 0 ? (
+              <div className="empty-state">
+                <p>No pending pairing requests</p>
+                <p className="hint">
+                  Send a DM to the bot on the channel first; it will respond with a pairing code.
+                </p>
+              </div>
+            ) : (
+              <div className="devices-grid">
+                {pairingRequests.map((r) => (
+                  <div key={`${r.id}:${r.code}`} className="device-card pending">
+                    <div className="device-header">
+                      <span className="device-name">{r.id}</span>
+                      <span className="device-badge pending">Pending</span>
+                    </div>
+                    <div className="device-details">
+                      <div className="detail-row">
+                        <span className="label">Code:</span>
+                        <span className="value">{r.code}</span>
+                      </div>
+                      {r.createdAt && (
+                        <div className="detail-row">
+                          <span className="label">Requested:</span>
+                          <span className="value">{r.createdAt}</span>
+                        </div>
+                      )}
+                    </div>
+                    <div className="device-actions">
+                      <button
+                        className="btn btn-primary"
+                        onClick={() => handleApprovePairing(r.code)}
+                        disabled={actionInProgress !== null}
+                      >
+                        {actionInProgress === `pairing:${r.code}` && <ButtonSpinner />}
+                        {actionInProgress === `pairing:${r.code}` ? 'Approving...' : 'Approve'}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
           <section className="devices-section">
         <div className="section-header">
           <h2>Pending Pairing Requests</h2>

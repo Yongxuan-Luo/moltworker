@@ -11,15 +11,23 @@ export function buildEnvVars(env: MoltbotEnv): Record<string, string> {
 
   // Normalize the base URL by removing trailing slashes
   const normalizedBaseUrl = env.AI_GATEWAY_BASE_URL?.replace(/\/+$/, '');
-  const isOpenAIGateway = normalizedBaseUrl?.endsWith('/openai');
+  const isCustomProvider = /\/custom-[^/]+$/.test(normalizedBaseUrl ?? '');
+  const isOpenRouterGateway =
+    normalizedBaseUrl?.endsWith('/openrouter') || normalizedBaseUrl?.endsWith('/custom-openrouter');
+  const isOpenAICompatibleGateway =
+    normalizedBaseUrl?.endsWith('/openai') || isOpenRouterGateway || isCustomProvider;
 
   // AI Gateway vars take precedence
   // Map to the appropriate provider env var based on the gateway endpoint
   if (env.AI_GATEWAY_API_KEY) {
-    if (isOpenAIGateway) {
+    if (isOpenAICompatibleGateway) {
       envVars.OPENAI_API_KEY = env.AI_GATEWAY_API_KEY;
     } else {
       envVars.ANTHROPIC_API_KEY = env.AI_GATEWAY_API_KEY;
+    }
+    // If the gateway is OpenRouter (native or custom), also expose OPENROUTER_API_KEY for tools/compat.
+    if (isOpenRouterGateway) {
+      envVars.OPENROUTER_API_KEY = env.AI_GATEWAY_API_KEY;
     }
   }
 
@@ -30,12 +38,33 @@ export function buildEnvVars(env: MoltbotEnv): Record<string, string> {
   if (!envVars.OPENAI_API_KEY && env.OPENAI_API_KEY) {
     envVars.OPENAI_API_KEY = env.OPENAI_API_KEY;
   }
+  // Direct OpenRouter support (OpenAI-compatible). We pass it through to the container
+  // so OpenClaw can use it both for model calls and tools that explicitly look for OPENROUTER_API_KEY.
+  if (env.OPENROUTER_API_KEY) {
+    envVars.OPENROUTER_API_KEY = env.OPENROUTER_API_KEY;
+  }
+  if (env.OPENROUTER_BASE_URL) {
+    envVars.OPENROUTER_BASE_URL = env.OPENROUTER_BASE_URL;
+  }
+  if (env.OPENROUTER_PRIMARY_MODEL) {
+    envVars.OPENROUTER_PRIMARY_MODEL = env.OPENROUTER_PRIMARY_MODEL;
+  }
+  if (env.OPENROUTER_MODELS) {
+    envVars.OPENROUTER_MODELS = env.OPENROUTER_MODELS;
+  }
+  // Web search provider keys (optional). Clawdbot's web_search tool can use Brave Search.
+  if (env.BRAVE_API_KEY) {
+    envVars.BRAVE_API_KEY = env.BRAVE_API_KEY;
+  }
+  if (env.AI_GATEWAY_AUTH_TOKEN) {
+    envVars.AI_GATEWAY_AUTH_TOKEN = env.AI_GATEWAY_AUTH_TOKEN;
+  }
 
   // Pass base URL (used by start-moltbot.sh to determine provider)
   if (normalizedBaseUrl) {
     envVars.AI_GATEWAY_BASE_URL = normalizedBaseUrl;
     // Also set the provider-specific base URL env var
-    if (isOpenAIGateway) {
+    if (isOpenAICompatibleGateway) {
       envVars.OPENAI_BASE_URL = normalizedBaseUrl;
     } else {
       envVars.ANTHROPIC_BASE_URL = normalizedBaseUrl;

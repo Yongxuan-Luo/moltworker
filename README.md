@@ -12,6 +12,8 @@ Run [OpenClaw](https://github.com/openclaw/openclaw) (formerly Moltbot, formerly
 
 - [Workers Paid plan](https://www.cloudflare.com/plans/developer-platform/) ($5 USD/month) — required for Cloudflare Sandbox containers
 - [Anthropic API key](https://console.anthropic.com/) — for Claude access, or you can use AI Gateway's [Unified Billing](https://developers.cloudflare.com/ai-gateway/features/unified-billing/)
+- (Optional) [OpenRouter API key](https://openrouter.ai/) — for direct OpenRouter access (no AI Gateway required)
+- (Optional) [Brave Search API key](https://brave.com/search/api/) — for the `web_search` tool (requires the "Data for Search" plan)
 
 The following Cloudflare features used by this project have free tiers:
 - Cloudflare Access (authentication)
@@ -45,6 +47,13 @@ npm install
 
 # Set your API key (direct Anthropic access)
 npx wrangler secret put ANTHROPIC_API_KEY
+
+# Or use OpenRouter directly (see "Direct OpenRouter" below)
+# npx wrangler secret put OPENROUTER_API_KEY
+# npx wrangler secret put OPENROUTER_BASE_URL
+
+# Optional: enable web search via Brave Search (Data for Search API)
+# npx wrangler secret put BRAVE_API_KEY
 
 # Or use AI Gateway instead (see "Optional: Cloudflare AI Gateway" below)
 # npx wrangler secret put AI_GATEWAY_API_KEY
@@ -213,6 +222,8 @@ Without R2 credentials, moltbot still works but uses ephemeral storage (data los
 
 By default, the sandbox container stays alive indefinitely (`SANDBOX_SLEEP_AFTER=never`). This is recommended because cold starts take 1-2 minutes.
 
+If you deploy changes to the container image (e.g. `Dockerfile`, `start-moltbot.sh`, `moltbot.json.template`) and the running container keeps using an older cached filesystem, use the Admin UI “Reset Sandbox” button to destroy and recreate the container.
+
 To reduce costs for infrequently used deployments, you can configure the container to sleep after a period of inactivity:
 
 ```bash
@@ -229,6 +240,7 @@ When the container sleeps, the next request will trigger a cold start. If you ha
 Access the admin UI at `/_admin/` to:
 - **R2 Storage Status** - Shows if R2 is configured, last backup time, and a "Backup Now" button
 - **Restart Gateway** - Kill and restart the moltbot gateway process
+- **Reset Sandbox** - Destroy and recreate the sandbox container (use if the container image/startup script is stuck after deploy)
 - **Device Pairing** - View pending requests, approve devices individually or all at once, view paired devices
 
 The admin UI requires Cloudflare Access authentication (or `DEV_MODE=true` for local development).
@@ -333,7 +345,7 @@ You can route API requests through [Cloudflare AI Gateway](https://developers.cl
 ### Setup
 
 1. Create an AI Gateway in the [AI Gateway section](https://dash.cloudflare.com/?to=/:account/ai/ai-gateway/create-gateway) of the Cloudflare Dashboard.
-2. Add a provider (e.g., Anthropic) to your gateway
+2. Add a provider (e.g., Anthropic, OpenAI, or OpenRouter) to your gateway
 3. Set the gateway secrets:
 
 You'll find the base URL on the Overview tab of your newly created gateway. At the bottom of the page, expand the **Native API/SDK Examples** section and select "Anthropic".
@@ -345,6 +357,9 @@ npx wrangler secret put AI_GATEWAY_API_KEY
 # Your AI Gateway endpoint URL
 npx wrangler secret put AI_GATEWAY_BASE_URL
 # Enter: https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/anthropic
+# Or (OpenAI-compatible providers):
+#   https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/openai
+#   https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/openrouter
 ```
 
 4. Redeploy:
@@ -355,18 +370,75 @@ npm run deploy
 
 The `AI_GATEWAY_*` variables take precedence over `ANTHROPIC_*` if both are set.
 
+### OpenRouter via AI Gateway Custom Provider
+
+If the AI Gateway UI doesn't list OpenRouter as a provider, you can create a Custom Provider that points at OpenRouter:
+
+1. Create a Custom Provider with slug `openrouter` and base URL `https://openrouter.ai/api/v1`
+2. Set:
+```bash
+npx wrangler secret put AI_GATEWAY_API_KEY
+npx wrangler secret put AI_GATEWAY_BASE_URL
+# Enter: https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/custom-openrouter
+```
+
+If you enabled AI Gateway "Authenticated Gateway", also set:
+```bash
+npx wrangler secret put AI_GATEWAY_AUTH_TOKEN
+```
+
+### Direct OpenRouter (no AI Gateway)
+
+If you don't have OpenRouter as an AI Gateway provider option, you can use OpenRouter directly:
+
+```bash
+npx wrangler secret put OPENROUTER_API_KEY
+# Optional (default: https://openrouter.ai/api/v1)
+# npx wrangler secret put OPENROUTER_BASE_URL
+```
+
+#### Picking a default OpenRouter model
+
+By default, OpenRouter uses `openrouter/auto`. To pin a specific model:
+
+```bash
+npx wrangler secret put OPENROUTER_PRIMARY_MODEL
+# Example: anthropic/claude-3.5-sonnet
+```
+
+Optionally, you can provide a comma-separated model allowlist so multiple models show up in the bot's model list:
+
+```bash
+npx wrangler secret put OPENROUTER_MODELS
+# Example: openrouter/auto,anthropic/claude-3.5-sonnet,openai/gpt-4o-mini
+```
+
+### Optional: Web Search (Brave)
+
+To enable the `web_search` tool, set a Brave Search API key (Brave "Data for Search" plan):
+
+```bash
+npx wrangler secret put BRAVE_API_KEY
+```
+
 ## All Secrets Reference
 
 | Secret | Required | Description |
 |--------|----------|-------------|
 | `AI_GATEWAY_API_KEY` | Yes* | API key for your AI Gateway provider (requires `AI_GATEWAY_BASE_URL`) |
 | `AI_GATEWAY_BASE_URL` | Yes* | AI Gateway endpoint URL (required when using `AI_GATEWAY_API_KEY`) |
+| `AI_GATEWAY_AUTH_TOKEN` | No | AI Gateway "Authenticated Gateway" token (sent as `cf-aig-authorization`) |
 | `ANTHROPIC_API_KEY` | Yes* | Direct Anthropic API key (fallback if AI Gateway not configured) |
 | `ANTHROPIC_BASE_URL` | No | Direct Anthropic API base URL (fallback) |
-| `OPENAI_API_KEY` | No | OpenAI API key (alternative provider) |
+| `OPENAI_API_KEY` | No | OpenAI API key (alternative provider; also used when `AI_GATEWAY_BASE_URL` ends with `/openai` or `/openrouter`) |
+| `OPENROUTER_API_KEY` | Yes* | OpenRouter API key (direct OpenRouter, no AI Gateway required) |
+| `OPENROUTER_BASE_URL` | No | OpenRouter base URL override (default: `https://openrouter.ai/api/v1`) |
+| `OPENROUTER_PRIMARY_MODEL` | No | Default OpenRouter model id (e.g. `openrouter/auto`, `anthropic/claude-3.5-sonnet`) |
+| `OPENROUTER_MODELS` | No | Comma-separated OpenRouter model ids to show in the model list |
+| `BRAVE_API_KEY` | No | Brave Search API key (enables `web_search`) |
 | `CF_ACCESS_TEAM_DOMAIN` | Yes* | Cloudflare Access team domain (required for admin UI) |
 | `CF_ACCESS_AUD` | Yes* | Cloudflare Access application audience (required for admin UI) |
-| `MOLTBOT_GATEWAY_TOKEN` | Yes | Gateway token for authentication (pass via `?token=` query param) |
+| `MOLTBOT_GATEWAY_TOKEN` | Yes | Gateway token for authentication (the Worker injects it when proxying; you generally don’t need to add `?token=` manually) |
 | `DEV_MODE` | No | Set to `true` to skip CF Access auth + device pairing (local dev only) |
 | `DEBUG_ROUTES` | No | Set to `true` to enable `/debug/*` routes |
 | `SANDBOX_SLEEP_AFTER` | No | Container sleep timeout: `never` (default) or duration like `10m`, `1h` |

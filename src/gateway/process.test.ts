@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { findExistingMoltbotProcess } from './process';
+import { ensureMoltbotGateway, findExistingMoltbotProcess } from './process';
 import type { Sandbox, Process } from '@cloudflare/sandbox';
-import { createMockSandbox } from '../test-utils';
+import { createMockEnv, createMockSandbox, suppressConsole } from '../test-utils';
 
 // Helper to create a full mock process (with methods needed for process tests)
 function createFullMockProcess(overrides: Partial<Process> = {}): Process {
@@ -118,5 +118,67 @@ describe('findExistingMoltbotProcess', () => {
     
     const result = await findExistingMoltbotProcess(sandbox);
     expect(result?.id).toBe('gateway-1');
+  });
+});
+
+describe('ensureMoltbotGateway', () => {
+  it('destroys the sandbox and retries once on startup script syntax errors', async () => {
+    suppressConsole();
+
+    const failingProcess = createFullMockProcess({
+      id: 'proc-fail',
+      status: 'starting',
+      waitForPort: vi.fn().mockRejectedValue(new Error('port not ready')),
+      getLogs: vi.fn().mockResolvedValue({
+        stdout: '',
+        stderr: '[stdin]:95\nconst isCustomProvider = /\\\\\\\\/custom-[^/]+$/.test(baseUrl);\nSyntaxError: Invalid regular expression flags\n',
+      }),
+    });
+
+    const goodProcess = createFullMockProcess({
+      id: 'proc-ok',
+      status: 'running',
+      waitForPort: vi.fn().mockResolvedValue(undefined),
+      getLogs: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+    });
+
+    const sandbox = {
+      listProcesses: vi.fn().mockResolvedValue([]),
+      startProcess: vi.fn().mockResolvedValueOnce(failingProcess).mockResolvedValueOnce(goodProcess),
+      destroy: vi.fn().mockResolvedValue(undefined),
+    } as unknown as Sandbox;
+
+    const env = createMockEnv();
+    const proc = await ensureMoltbotGateway(sandbox, env);
+
+    expect(proc.id).toBe('proc-ok');
+    expect(sandbox.destroy).toHaveBeenCalledTimes(1);
+    expect(sandbox.startProcess).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not destroy the sandbox on non-syntax startup failures', async () => {
+    suppressConsole();
+
+    const failingProcess = createFullMockProcess({
+      id: 'proc-fail',
+      status: 'starting',
+      waitForPort: vi.fn().mockRejectedValue(new Error('port not ready')),
+      getLogs: vi.fn().mockResolvedValue({
+        stdout: '',
+        stderr: 'Missing ANTHROPIC_API_KEY or AI_GATEWAY_API_KEY',
+      }),
+    });
+
+    const sandbox = {
+      listProcesses: vi.fn().mockResolvedValue([]),
+      startProcess: vi.fn().mockResolvedValue(failingProcess),
+      destroy: vi.fn().mockResolvedValue(undefined),
+    } as unknown as Sandbox;
+
+    const env = createMockEnv();
+
+    await expect(ensureMoltbotGateway(sandbox, env)).rejects.toThrow('Moltbot gateway failed to start');
+    expect(sandbox.destroy).toHaveBeenCalledTimes(0);
+    expect(sandbox.startProcess).toHaveBeenCalledTimes(1);
   });
 });

@@ -11,7 +11,10 @@
  * - Configuration via environment secrets
  *
  * Required secrets (set via `wrangler secret put`):
- * - ANTHROPIC_API_KEY: Your Anthropic API key
+ * - Either:
+ *   - ANTHROPIC_API_KEY: Your Anthropic API key, or
+ *   - OPENROUTER_API_KEY: Your OpenRouter API key, or
+ *   - AI_GATEWAY_API_KEY + AI_GATEWAY_BASE_URL: Cloudflare AI Gateway (Anthropic/OpenAI/OpenRouter)
  *
  * Optional secrets:
  * - MOLTBOT_GATEWAY_TOKEN: Token to protect gateway access
@@ -57,7 +60,9 @@ function validateRequiredEnv(env: MoltbotEnv): string[] {
   const missing: string[] = [];
   const isTestMode = env.DEV_MODE === 'true' || env.E2E_TEST_MODE === 'true';
 
-  if (!env.MOLTBOT_GATEWAY_TOKEN) {
+  // In Cloudflare Sandbox, the gateway must bind to a non-loopback interface to be reachable via containerFetch/wsConnect.
+  // Newer clawdbot refuses non-loopback binds unless token auth is enabled, so we require a token outside dev/test mode.
+  if (!isTestMode && !env.MOLTBOT_GATEWAY_TOKEN) {
     missing.push('MOLTBOT_GATEWAY_TOKEN');
   }
 
@@ -78,9 +83,9 @@ function validateRequiredEnv(env: MoltbotEnv): string[] {
     if (!env.AI_GATEWAY_BASE_URL) {
       missing.push('AI_GATEWAY_BASE_URL (required when using AI_GATEWAY_API_KEY)');
     }
-  } else if (!env.ANTHROPIC_API_KEY) {
-    // Direct Anthropic access requires API key
-    missing.push('ANTHROPIC_API_KEY or AI_GATEWAY_API_KEY');
+  } else if (!env.ANTHROPIC_API_KEY && !env.OPENROUTER_API_KEY) {
+    // Direct provider access requires a key
+    missing.push('ANTHROPIC_API_KEY, OPENROUTER_API_KEY, or AI_GATEWAY_API_KEY');
   }
 
   return missing;
@@ -109,6 +114,55 @@ function buildSandboxOptions(env: MoltbotEnv): SandboxOptions {
   return { sleepAfter };
 }
 
+function withGatewayToken(request: Request, token: string | undefined): Request {
+  if (!token) return request;
+  const url = new URL(request.url);
+
+  // Only add token if caller didn't already provide one.
+  if (!url.searchParams.has('token')) {
+    url.searchParams.set('token', token);
+  }
+
+  return new Request(url.toString(), request);
+}
+
+function buildWsProbeRequest(token?: string): Request {
+  const url = new URL('http://localhost/');
+  if (token) url.searchParams.set('token', token);
+
+  return new Request(url.toString(), {
+    method: 'GET',
+    headers: {
+      Connection: 'Upgrade',
+      Upgrade: 'websocket',
+      'Sec-WebSocket-Version': '13',
+      'Sec-WebSocket-Key': 'dGVzdC1wcm9iZS1rZXk=',
+    },
+  });
+}
+
+async function isGatewayListening(sandbox: Sandbox, token?: string): Promise<boolean> {
+  try {
+    const res = await sandbox.wsConnect(buildWsProbeRequest(token), MOLTBOT_PORT);
+    const ws = res.webSocket;
+    if (!ws) return false;
+    ws.accept();
+    ws.close(1000, 'probe');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isContainerNotListeningError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return (
+    message.includes('container is not listening') ||
+    message.includes('not listening in the TCP address') ||
+    message.includes('Error proxying request to container')
+  );
+}
+
 // Main app
 const app = new Hono<AppEnv>();
 
@@ -122,6 +176,7 @@ app.use('*', async (c, next) => {
   const redactedSearch = redactSensitiveParams(url);
   console.log(`[REQ] ${c.req.method} ${url.pathname}${redactedSearch}`);
   console.log(`[REQ] Has ANTHROPIC_API_KEY: ${!!c.env.ANTHROPIC_API_KEY}`);
+  console.log(`[REQ] Has OPENROUTER_API_KEY: ${!!c.env.OPENROUTER_API_KEY}`);
   console.log(`[REQ] DEV_MODE: ${c.env.DEV_MODE}`);
   console.log(`[REQ] DEBUG_ROUTES: ${c.env.DEBUG_ROUTES}`);
   await next();
@@ -220,14 +275,19 @@ app.route('/debug', debug);
 
 app.all('*', async (c) => {
   const sandbox = c.get('sandbox');
-  const request = c.req.raw;
+  const request = withGatewayToken(c.req.raw, c.env.MOLTBOT_GATEWAY_TOKEN);
   const url = new URL(request.url);
 
   console.log('[PROXY] Handling request:', url.pathname);
 
   // Check if gateway is already running
   const existingProcess = await findExistingMoltbotProcess(sandbox);
-  const isGatewayReady = existingProcess !== null && existingProcess.status === 'running';
+  let isGatewayReady = existingProcess !== null && existingProcess.status === 'running';
+  if (!isGatewayReady) {
+    // The gateway may be supervised/daemonized inside the container, which means it can be
+    // listening even if we can't see a running Process via listProcesses().
+    isGatewayReady = await isGatewayListening(sandbox, c.env.MOLTBOT_GATEWAY_TOKEN);
+  }
 
   // For browser requests (non-WebSocket, non-API), show loading page if gateway isn't ready
   const isWebSocketRequest = request.headers.get('Upgrade')?.toLowerCase() === 'websocket';
@@ -254,9 +314,14 @@ app.all('*', async (c) => {
     console.error('[PROXY] Failed to start Moltbot:', error);
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
-    let hint = 'Check worker logs with: wrangler tail';
-    if (!c.env.ANTHROPIC_API_KEY) {
-      hint = 'ANTHROPIC_API_KEY is not set. Run: wrangler secret put ANTHROPIC_API_KEY';
+    let hint = 'Check worker logs with: npx wrangler tail';
+    const hasAiGateway = !!c.env.AI_GATEWAY_API_KEY;
+    const hasDirectKey = !!c.env.ANTHROPIC_API_KEY || !!c.env.OPENAI_API_KEY || !!c.env.OPENROUTER_API_KEY;
+
+    if (hasAiGateway && !c.env.AI_GATEWAY_BASE_URL) {
+      hint = 'AI_GATEWAY_BASE_URL is not set. Run: wrangler secret put AI_GATEWAY_BASE_URL';
+    } else if (!hasAiGateway && !hasDirectKey) {
+      hint = 'Missing model provider credentials. Run: wrangler secret put ANTHROPIC_API_KEY, OPENROUTER_API_KEY, or set AI_GATEWAY_API_KEY + AI_GATEWAY_BASE_URL';
     } else if (errorMessage.includes('heap out of memory') || errorMessage.includes('OOM')) {
       hint = 'Gateway ran out of memory. Try again or check for memory leaks.';
     }
@@ -278,9 +343,43 @@ app.all('*', async (c) => {
       console.log('[WS] URL:', url.pathname + redactedSearch);
     }
 
-    // Get WebSocket connection to the container
-    const containerResponse = await sandbox.wsConnect(request, MOLTBOT_PORT);
-    console.log('[WS] wsConnect response status:', containerResponse.status);
+    let containerResponse: Response;
+    try {
+      // Get WebSocket connection to the container
+      containerResponse = await sandbox.wsConnect(request, MOLTBOT_PORT);
+      console.log('[WS] wsConnect response status:', containerResponse.status);
+    } catch (err) {
+      // The gateway can crash/restart after we passed readiness checks; retry once.
+      if (isContainerNotListeningError(err)) {
+        console.warn('[WS] Container port not listening; retrying gateway ensure then wsConnect...');
+        try {
+          await ensureMoltbotGateway(sandbox, c.env);
+          containerResponse = await sandbox.wsConnect(request, MOLTBOT_PORT);
+          console.log('[WS] wsConnect response status (retry):', containerResponse.status);
+        } catch (retryErr) {
+          console.error('[WS] wsConnect retry failed:', retryErr);
+          return c.json(
+            {
+              error: 'Gateway not ready',
+              details:
+                retryErr instanceof Error ? retryErr.message : 'Container is not listening on gateway port',
+              hint: `Open https://${url.host}/_admin/ and click “Restart Gateway” (or “Reset Sandbox”).`,
+            },
+            503
+          );
+        }
+      } else {
+        console.error('[WS] wsConnect failed:', err);
+        return c.json(
+          {
+            error: 'WebSocket proxy failed',
+            details: err instanceof Error ? err.message : 'Unknown error',
+            hint: `Check worker logs with: npx wrangler tail (and try https://${url.host}/_admin/).`,
+          },
+          502
+        );
+      }
+    }
 
     // Get the container-side WebSocket
     const containerWs = containerResponse.webSocket;
@@ -400,8 +499,45 @@ app.all('*', async (c) => {
   }
 
   console.log('[HTTP] Proxying:', url.pathname + url.search);
-  const httpResponse = await sandbox.containerFetch(request, MOLTBOT_PORT);
-  console.log('[HTTP] Response status:', httpResponse.status);
+  let httpResponse: Response;
+  try {
+    httpResponse = await sandbox.containerFetch(request, MOLTBOT_PORT);
+    console.log('[HTTP] Response status:', httpResponse.status);
+  } catch (err) {
+    // The container can be up but the gateway port may not be listening (crash/restart).
+    // Don’t surface the raw platform error; show loading/503 and kick off restart.
+    if (isContainerNotListeningError(err)) {
+      console.warn('[HTTP] Container port not listening; serving fallback and starting gateway in background.');
+      c.executionCtx.waitUntil(
+        ensureMoltbotGateway(sandbox, c.env).catch((ensureErr: Error) => {
+          console.error('[HTTP] Background gateway ensure failed:', ensureErr);
+        })
+      );
+
+      const wantsHtml = request.headers.get('Accept')?.includes('text/html');
+      if (wantsHtml) {
+        return c.html(loadingPageHtml, 503);
+      }
+      return c.json(
+        {
+          error: 'Gateway not ready',
+          details: err instanceof Error ? err.message : 'Container is not listening on gateway port',
+          hint: `Open https://${url.host}/_admin/ and click “Restart Gateway” (or “Reset Sandbox”).`,
+        },
+        503
+      );
+    }
+
+    console.error('[HTTP] containerFetch failed:', err);
+    return c.json(
+      {
+        error: 'Proxy error',
+        details: err instanceof Error ? err.message : 'Unknown error',
+        hint: 'Check worker logs with: npx wrangler tail',
+      },
+      502
+    );
+  }
 
   // Add debug header to verify worker handled the request
   const newHeaders = new Headers(httpResponse.headers);

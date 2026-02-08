@@ -37,6 +37,30 @@ describe('buildEnvVars', () => {
     expect(result.ANTHROPIC_API_KEY).toBeUndefined();
   });
 
+  it('maps AI_GATEWAY_API_KEY to OPENAI_API_KEY for OpenRouter gateway', () => {
+    const env = createMockEnv({
+      AI_GATEWAY_API_KEY: 'sk-gateway-key',
+      AI_GATEWAY_BASE_URL: 'https://gateway.ai.cloudflare.com/v1/123/my-gw/openrouter',
+    });
+    const result = buildEnvVars(env);
+    expect(result.OPENAI_API_KEY).toBe('sk-gateway-key');
+    expect(result.OPENAI_BASE_URL).toBe('https://gateway.ai.cloudflare.com/v1/123/my-gw/openrouter');
+    expect(result.OPENROUTER_API_KEY).toBe('sk-gateway-key');
+    expect(result.ANTHROPIC_API_KEY).toBeUndefined();
+  });
+
+  it('maps AI_GATEWAY_API_KEY to OPENAI_API_KEY for custom OpenRouter gateway', () => {
+    const env = createMockEnv({
+      AI_GATEWAY_API_KEY: 'sk-gateway-key',
+      AI_GATEWAY_BASE_URL: 'https://gateway.ai.cloudflare.com/v1/123/my-gw/custom-openrouter',
+    });
+    const result = buildEnvVars(env);
+    expect(result.OPENAI_API_KEY).toBe('sk-gateway-key');
+    expect(result.OPENAI_BASE_URL).toBe('https://gateway.ai.cloudflare.com/v1/123/my-gw/custom-openrouter');
+    expect(result.OPENROUTER_API_KEY).toBe('sk-gateway-key');
+    expect(result.ANTHROPIC_API_KEY).toBeUndefined();
+  });
+
   it('passes AI_GATEWAY_BASE_URL directly', () => {
     const env = createMockEnv({
       AI_GATEWAY_BASE_URL: 'https://gateway.ai.cloudflare.com/v1/123/my-gw/anthropic',
@@ -83,6 +107,38 @@ describe('buildEnvVars', () => {
     const env = createMockEnv({ OPENAI_API_KEY: 'sk-openai-key' });
     const result = buildEnvVars(env);
     expect(result.OPENAI_API_KEY).toBe('sk-openai-key');
+  });
+
+  it('includes OPENROUTER_API_KEY when set directly (no gateway)', () => {
+    const env = createMockEnv({ OPENROUTER_API_KEY: 'sk-or-test' });
+    const result = buildEnvVars(env);
+    expect(result.OPENROUTER_API_KEY).toBe('sk-or-test');
+  });
+
+  it('includes BRAVE_API_KEY when set', () => {
+    const env = createMockEnv({ BRAVE_API_KEY: 'brave-test-key' });
+    const result = buildEnvVars(env);
+    expect(result.BRAVE_API_KEY).toBe('brave-test-key');
+  });
+
+  it('passes OPENROUTER_BASE_URL through when set', () => {
+    const env = createMockEnv({
+      OPENROUTER_API_KEY: 'sk-or-test',
+      OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
+    });
+    const result = buildEnvVars(env);
+    expect(result.OPENROUTER_API_KEY).toBe('sk-or-test');
+    expect(result.OPENROUTER_BASE_URL).toBe('https://openrouter.ai/api/v1');
+  });
+
+  it('passes OpenRouter model selection vars through when set', () => {
+    const env = createMockEnv({
+      OPENROUTER_PRIMARY_MODEL: 'anthropic/claude-3.5-sonnet',
+      OPENROUTER_MODELS: 'openrouter/auto,anthropic/claude-3.5-sonnet',
+    });
+    const result = buildEnvVars(env);
+    expect(result.OPENROUTER_PRIMARY_MODEL).toBe('anthropic/claude-3.5-sonnet');
+    expect(result.OPENROUTER_MODELS).toBe('openrouter/auto,anthropic/claude-3.5-sonnet');
   });
 
   it('maps MOLTBOT_GATEWAY_TOKEN to CLAWDBOT_GATEWAY_TOKEN for container', () => {
@@ -145,6 +201,32 @@ describe('buildEnvVars', () => {
     expect(result.OPENAI_API_KEY).toBe('sk-gateway-key');
     expect(result.OPENAI_BASE_URL).toBe('https://gateway.ai.cloudflare.com/v1/123/my-gw/openai');
     expect(result.AI_GATEWAY_BASE_URL).toBe('https://gateway.ai.cloudflare.com/v1/123/my-gw/openai');
+    expect(result.ANTHROPIC_API_KEY).toBeUndefined();
+  });
+
+  it('handles trailing slash in AI_GATEWAY_BASE_URL for OpenRouter', () => {
+    const env = createMockEnv({
+      AI_GATEWAY_API_KEY: 'sk-gateway-key',
+      AI_GATEWAY_BASE_URL: 'https://gateway.ai.cloudflare.com/v1/123/my-gw/openrouter/',
+    });
+    const result = buildEnvVars(env);
+    expect(result.OPENAI_API_KEY).toBe('sk-gateway-key');
+    expect(result.OPENAI_BASE_URL).toBe('https://gateway.ai.cloudflare.com/v1/123/my-gw/openrouter');
+    expect(result.AI_GATEWAY_BASE_URL).toBe('https://gateway.ai.cloudflare.com/v1/123/my-gw/openrouter');
+    expect(result.OPENROUTER_API_KEY).toBe('sk-gateway-key');
+    expect(result.ANTHROPIC_API_KEY).toBeUndefined();
+  });
+
+  it('handles trailing slash in AI_GATEWAY_BASE_URL for custom OpenRouter', () => {
+    const env = createMockEnv({
+      AI_GATEWAY_API_KEY: 'sk-gateway-key',
+      AI_GATEWAY_BASE_URL: 'https://gateway.ai.cloudflare.com/v1/123/my-gw/custom-openrouter/',
+    });
+    const result = buildEnvVars(env);
+    expect(result.OPENAI_API_KEY).toBe('sk-gateway-key');
+    expect(result.OPENAI_BASE_URL).toBe('https://gateway.ai.cloudflare.com/v1/123/my-gw/custom-openrouter');
+    expect(result.AI_GATEWAY_BASE_URL).toBe('https://gateway.ai.cloudflare.com/v1/123/my-gw/custom-openrouter');
+    expect(result.OPENROUTER_API_KEY).toBe('sk-gateway-key');
     expect(result.ANTHROPIC_API_KEY).toBeUndefined();
   });
 

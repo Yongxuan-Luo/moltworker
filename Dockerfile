@@ -10,7 +10,7 @@ RUN ARCH="$(dpkg --print-architecture)" \
          arm64) NODE_ARCH="arm64" ;; \
          *) echo "Unsupported architecture: ${ARCH}" >&2; exit 1 ;; \
        esac \
-    && apt-get update && apt-get install -y xz-utils ca-certificates rsync \
+    && apt-get update && apt-get install -y xz-utils ca-certificates rsync bash procps \
     && curl -fsSLk https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz -o /tmp/node.tar.xz \
     && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
     && rm /tmp/node.tar.xz \
@@ -33,9 +33,13 @@ RUN mkdir -p /root/.clawdbot \
     && mkdir -p /root/clawd/skills
 
 # Copy startup script
-# Build cache bust: 2026-01-28-v26-browser-skill
+# Cache-bust this layer when startup script changes (or when Windows CRLF sneaks in).
+# If you see "/bin/bash^M: bad interpreter" at runtime, bump this value and redeploy.
+ARG START_MOLTBOT_SH_CACHEBUST=2026-02-08-01
 COPY start-moltbot.sh /usr/local/bin/start-moltbot.sh
-RUN chmod +x /usr/local/bin/start-moltbot.sh
+RUN echo "$START_MOLTBOT_SH_CACHEBUST" > /usr/local/bin/.start-moltbot.sh-cachebust \
+    && sed -i 's/\r$//' /usr/local/bin/start-moltbot.sh \
+    && chmod +x /usr/local/bin/start-moltbot.sh
 
 # Copy default configuration template
 COPY moltbot.json.template /root/.clawdbot-templates/moltbot.json.template

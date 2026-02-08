@@ -9,11 +9,19 @@ export interface MoltbotEnv {
   MOLTBOT_BUCKET: R2Bucket; // R2 bucket for persistent storage
   // AI Gateway configuration (preferred)
   AI_GATEWAY_API_KEY?: string; // API key for the provider configured in AI Gateway
-  AI_GATEWAY_BASE_URL?: string; // AI Gateway URL (e.g., https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/anthropic)
+  AI_GATEWAY_BASE_URL?: string; // AI Gateway URL (e.g., .../{gateway_id}/anthropic, .../{gateway_id}/openai, .../{gateway_id}/openrouter)
+  AI_GATEWAY_AUTH_TOKEN?: string; // Optional token for AI Gateway "Authenticated Gateway" (sent as cf-aig-authorization)
   // Legacy direct provider configuration (fallback)
   ANTHROPIC_API_KEY?: string;
   ANTHROPIC_BASE_URL?: string;
   OPENAI_API_KEY?: string;
+  // Direct OpenRouter configuration (OpenAI-compatible)
+  OPENROUTER_API_KEY?: string;
+  OPENROUTER_BASE_URL?: string; // Optional override (default: https://openrouter.ai/api/v1)
+  OPENROUTER_PRIMARY_MODEL?: string; // Optional default model id (e.g. 'openrouter/auto', 'anthropic/claude-3.5-sonnet')
+  OPENROUTER_MODELS?: string; // Optional comma-separated allowlist of model ids for UI (e.g. 'openrouter/auto,anthropic/claude-3.5-sonnet')
+  // Web search provider keys (optional)
+  BRAVE_API_KEY?: string; // Brave Search API key (Data for Search). Used by the web_search tool.
   MOLTBOT_GATEWAY_TOKEN?: string; // Gateway token (mapped to CLAWDBOT_GATEWAY_TOKEN for container)
 
   CLAWDBOT_BIND_MODE?: string;

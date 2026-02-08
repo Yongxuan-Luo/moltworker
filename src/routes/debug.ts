@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { AppEnv } from '../types';
 import { findExistingMoltbotProcess } from '../gateway';
+import { buildEnvVars } from '../gateway/env';
 
 /**
  * Debug routes for inspecting container state
@@ -127,9 +128,11 @@ debug.get('/gateway-api', async (c) => {
 debug.get('/cli', async (c) => {
   const sandbox = c.get('sandbox');
   const cmd = c.req.query('cmd') || 'clawdbot --help';
+  const withEnv = c.req.query('withEnv') === 'true' || c.req.query('withEnv') === '1';
   
   try {
-    const proc = await sandbox.startProcess(cmd);
+    const env = withEnv ? buildEnvVars(c.env) : undefined;
+    const proc = await sandbox.startProcess(cmd, env ? { env } : undefined);
     
     // Wait longer for command to complete
     let attempts = 0;
