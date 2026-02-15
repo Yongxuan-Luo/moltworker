@@ -5,6 +5,11 @@ import {
   approveAllDevices,
   listPairingRequests,
   approvePairingCode,
+  listMemoryFiles,
+  getMemoryFile,
+  saveMemoryFile,
+  deleteMemoryFile,
+  importMemoryJson,
   listSkills,
   getSkill,
   setSkillEnabled,
@@ -21,6 +26,9 @@ import {
   type SkillsListResponse,
   type SkillSummary,
   type SkillDetailResponse,
+  type MemoryFilesResponse,
+  type MemoryFileEntry,
+  type MemoryFileResponse,
 } from '../api'
 import './AdminPage.css'
 
@@ -57,6 +65,19 @@ export default function AdminPage() {
   const [paired, setPaired] = useState<PairedDevice[]>([])
   const [storageStatus, setStorageStatus] = useState<StorageStatusResponse | null>(null)
   const [skillsReport, setSkillsReport] = useState<SkillsListResponse | null>(null)
+  const [memoryReport, setMemoryReport] = useState<MemoryFilesResponse | null>(null)
+  const [memoryLoading, setMemoryLoading] = useState(false)
+  const [memoryFileLoading, setMemoryFileLoading] = useState(false)
+  const [memorySaveLoading, setMemorySaveLoading] = useState(false)
+  const [memoryDeleteLoading, setMemoryDeleteLoading] = useState(false)
+  const [memoryImportLoading, setMemoryImportLoading] = useState(false)
+  const [memoryError, setMemoryError] = useState<string | null>(null)
+  const [memoryFilter, setMemoryFilter] = useState('')
+  const [memoryImportMode, setMemoryImportMode] = useState<'overwrite' | 'merge'>('overwrite')
+  const [selectedMemoryPath, setSelectedMemoryPath] = useState<string | null>(null)
+  const [selectedMemoryFile, setSelectedMemoryFile] = useState<MemoryFileResponse | null>(null)
+  const [memoryDraft, setMemoryDraft] = useState('')
+  const [memoryDirty, setMemoryDirty] = useState(false)
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillDetailLoading, setSkillDetailLoading] = useState(false)
   const [skillToggleLoading, setSkillToggleLoading] = useState(false)
@@ -105,7 +126,161 @@ export default function AdminPage() {
       // Don't show error for storage status - it's not critical
       console.error('Failed to fetch storage status:', err)
     }
+  }, []) 
+
+  const fetchMemoryFiles = useCallback(async () => {
+    setMemoryLoading(true)
+    setMemoryError(null)
+    try {
+      const data = await listMemoryFiles()
+      setMemoryReport(data)
+    } catch (err) {
+      if (err instanceof AuthError) {
+        setError('Authentication required. Please log in via Cloudflare Access.')
+      } else {
+        setMemoryError(err instanceof Error ? err.message : 'Failed to fetch memory files')
+      }
+    } finally {
+      setMemoryLoading(false)
+    }
   }, [])
+
+  const fetchMemoryFile = useCallback(
+    async (path: string) => {
+      setSelectedMemoryPath(path)
+      setSelectedMemoryFile(null)
+      setMemoryDraft('')
+      setMemoryDirty(false)
+      setMemoryFileLoading(true)
+      setMemoryError(null)
+      try {
+        const data = await getMemoryFile(path)
+        setSelectedMemoryFile(data)
+        setMemoryDraft(data.content ?? '')
+      } catch (err) {
+        if (err instanceof AuthError) {
+          setError('Authentication required. Please log in via Cloudflare Access.')
+        } else {
+          setMemoryError(err instanceof Error ? err.message : 'Failed to read memory file')
+        }
+      } finally {
+        setMemoryFileLoading(false)
+      }
+    },
+    [setError]
+  )
+
+  const handleNewMemoryFile = async () => {
+    if (memoryDirty && !confirm('You have unsaved changes. Continue and discard them?')) return
+    const name = prompt('New memory file name (will be created under memory/):', 'note.md')
+    if (!name) return
+    const trimmed = name.trim()
+    if (!trimmed) return
+
+    const rel = trimmed.startsWith('memory/') ? trimmed : `memory/${trimmed}`
+    if (!rel.endsWith('.md')) {
+      setMemoryError('File name must end with .md')
+      return
+    }
+
+    setMemorySaveLoading(true)
+    setMemoryError(null)
+    try {
+      const res = await saveMemoryFile(rel, '')
+      if (res.error) {
+        setMemoryError(res.error)
+        return
+      }
+      await fetchMemoryFiles()
+      await fetchMemoryFile(rel)
+    } catch (err) {
+      setMemoryError(err instanceof Error ? err.message : 'Failed to create file')
+    } finally {
+      setMemorySaveLoading(false)
+    }
+  }
+
+  const handleSaveMemory = async () => {
+    if (!selectedMemoryPath) return
+    setMemorySaveLoading(true)
+    setMemoryError(null)
+    try {
+      const res = await saveMemoryFile(selectedMemoryPath, memoryDraft)
+      if (res.error) {
+        setMemoryError(res.error)
+        return
+      }
+      setMemoryDirty(false)
+      await fetchMemoryFiles()
+      await fetchMemoryFile(selectedMemoryPath)
+    } catch (err) {
+      setMemoryError(err instanceof Error ? err.message : 'Failed to save file')
+    } finally {
+      setMemorySaveLoading(false)
+    }
+  }
+
+  const handleDeleteMemory = async () => {
+    if (!selectedMemoryPath) return
+    if (!selectedMemoryPath.startsWith('memory/')) {
+      setMemoryError('Only files under memory/ can be deleted via this UI.')
+      return
+    }
+    if (!confirm(`Delete ${selectedMemoryPath}? This cannot be undone.`)) return
+
+    setMemoryDeleteLoading(true)
+    setMemoryError(null)
+    try {
+      const res = await deleteMemoryFile(selectedMemoryPath)
+      if (res.error) {
+        setMemoryError(res.error)
+        return
+      }
+      setSelectedMemoryPath(null)
+      setSelectedMemoryFile(null)
+      setMemoryDraft('')
+      setMemoryDirty(false)
+      await fetchMemoryFiles()
+    } catch (err) {
+      setMemoryError(err instanceof Error ? err.message : 'Failed to delete file')
+    } finally {
+      setMemoryDeleteLoading(false)
+    }
+  }
+
+  const handleImportMemory = async (file: File) => {
+    if (memoryDirty && !confirm('You have unsaved changes. Continue and discard them?')) return
+
+    setMemoryImportLoading(true)
+    setMemoryError(null)
+    try {
+      const text = await file.text()
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(text)
+      } catch {
+        setMemoryError('Invalid JSON file')
+        return
+      }
+
+      const res = await importMemoryJson(parsed, memoryImportMode)
+      if (!res.ok) {
+        setMemoryError(res.error || 'Import failed')
+        return
+      }
+
+      alert(`Import complete (${res.mode}). Wrote ${res.wrote?.length ?? 0} file(s). Deleted ${res.deleted?.length ?? 0} file(s).`)
+      await fetchMemoryFiles()
+      setSelectedMemoryPath(null)
+      setSelectedMemoryFile(null)
+      setMemoryDraft('')
+      setMemoryDirty(false)
+    } catch (err) {
+      setMemoryError(err instanceof Error ? err.message : 'Failed to import')
+    } finally {
+      setMemoryImportLoading(false)
+    }
+  }
 
   const fetchSkills = useCallback(async () => {
     setSkillsLoading(true)
@@ -181,9 +356,10 @@ export default function AdminPage() {
   useEffect(() => {
     fetchDevices()
     fetchStorageStatus()
+    fetchMemoryFiles()
     fetchSkills()
     fetchPairing()
-  }, [fetchDevices, fetchStorageStatus, fetchSkills, fetchPairing])
+  }, [fetchDevices, fetchStorageStatus, fetchMemoryFiles, fetchSkills, fetchPairing])
 
   const handleApprove = async (requestId: string) => {
     setActionInProgress(requestId)
@@ -330,6 +506,17 @@ export default function AdminPage() {
     return `${days}d ago`
   }
 
+  const formatBytes = (bytes: number) => {
+    if (!Number.isFinite(bytes) || bytes < 0) return '—'
+    if (bytes < 1024) return `${bytes} B`
+    const kb = bytes / 1024
+    if (kb < 1024) return `${kb.toFixed(1)} KB`
+    const mb = kb / 1024
+    if (mb < 1024) return `${mb.toFixed(1)} MB`
+    const gb = mb / 1024
+    return `${gb.toFixed(1)} GB`
+  }
+
   const skills: SkillSummary[] = skillsReport?.skills ?? []
   const skillsReady = skills.filter((s) => s.eligible).length
   const sortedSkills = [...skills].sort((a, b) => {
@@ -344,6 +531,11 @@ export default function AdminPage() {
     if (diff !== 0) return diff
     return a.name.localeCompare(b.name)
   })
+
+  const memoryFiles: MemoryFileEntry[] = memoryReport?.files ?? []
+  const filteredMemoryFiles = memoryFiles.filter((f) =>
+    memoryFilter.trim() ? f.path.toLowerCase().includes(memoryFilter.trim().toLowerCase()) : true
+  )
 
   return (
     <div className="devices-page">
@@ -654,6 +846,197 @@ export default function AdminPage() {
                     </div>
                   </div>
                 </>
+              )}
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section className="devices-section memory-section">
+        <div className="section-header">
+          <div className="skills-header-title">
+            <h2>Memory</h2>
+            <span className="skills-count">
+              {memoryLoading && memoryFiles.length === 0 ? 'Loading…' : `${memoryFiles.length} file(s)`}
+            </span>
+          </div>
+          <div className="header-actions">
+            <button className="btn btn-secondary" onClick={fetchMemoryFiles} disabled={memoryLoading}>
+              {memoryLoading ? 'Refreshing…' : 'Refresh'}
+            </button>
+            <button className="btn btn-secondary" onClick={handleNewMemoryFile} disabled={memorySaveLoading}>
+              {memorySaveLoading ? 'Creating…' : 'New file'}
+            </button>
+            <select
+              className="memory-import-mode"
+              value={memoryImportMode}
+              onChange={(e) => setMemoryImportMode(e.target.value as 'overwrite' | 'merge')}
+              disabled={memoryImportLoading}
+              title="Import mode"
+            >
+              <option value="overwrite">Overwrite</option>
+              <option value="merge">Merge</option>
+            </select>
+            <label className={`btn btn-secondary ${memoryImportLoading ? 'disabled' : ''}`}>
+              {memoryImportLoading ? 'Importing…' : 'Import JSON'}
+              <input
+                type="file"
+                accept="application/json"
+                className="memory-import-input"
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  // Allow selecting the same file again after import.
+                  e.target.value = ''
+                  if (f) handleImportMemory(f)
+                }}
+                disabled={memoryImportLoading}
+              />
+            </label>
+            <a className="btn btn-secondary" href="/api/admin/memory/export" target="_blank" rel="noopener noreferrer">
+              Export JSON
+            </a>
+          </div>
+        </div>
+        <p className="hint">
+          Browse workspace memory files (<code>MEMORY.md</code> and <code>memory/**/*.md</code>). This is a view layer; editing the files
+          changes what the memory index reads.
+        </p>
+        {memoryReport && (
+          <p className="hint">
+            Workspace: <code>{memoryReport.workspaceDir}</code> • Memory dir: <code>{memoryReport.memoryDir}</code>
+          </p>
+        )}
+
+        {memoryError && <p className="memory-error">{memoryError}</p>}
+
+        {memoryLoading && memoryFiles.length === 0 ? (
+          <div className="loading">
+            <div className="spinner"></div>
+            <p>Loading memory files…</p>
+          </div>
+        ) : memoryFiles.length === 0 ? (
+          <div className="empty-state">
+            <p>No memory files found</p>
+            <p className="hint">
+              Expected in workspace: <code>MEMORY.md</code> or <code>memory/</code>.
+            </p>
+          </div>
+        ) : (
+          <div className="memory-layout">
+            <div className="memory-list">
+              <div className="memory-list-controls">
+                <input
+                  className="memory-filter"
+                  value={memoryFilter}
+                  onChange={(e) => setMemoryFilter(e.target.value)}
+                  placeholder="Filter files…"
+                />
+              </div>
+
+                  {filteredMemoryFiles.length === 0 ? (
+                    <div className="empty-state">
+                      <p>No matching files</p>
+                    </div>
+                  ) : (
+                    filteredMemoryFiles.map((f) => {
+                      const isActive = selectedMemoryPath === f.path
+                      const isLoading = memoryFileLoading && isActive
+                      return (
+                        <button
+                          key={f.path}
+                          className={`memory-item ${isActive ? 'active' : ''}`}
+                          onClick={() => {
+                            if (memoryDirty && f.path !== selectedMemoryPath) {
+                              if (!confirm('You have unsaved changes. Continue and discard them?')) return
+                            }
+                            fetchMemoryFile(f.path)
+                          }}
+                          disabled={isLoading}
+                          title={f.path}
+                        >
+                      {isLoading && <ButtonSpinner />}
+                      <div className="memory-item-text">
+                        <div className="memory-item-row">
+                          <span className="memory-path">{f.path}</span>
+                          <span className="memory-meta">{formatBytes(f.bytes)}</span>
+                        </div>
+                        <div className="memory-meta">Updated {formatTimeAgo(f.mtimeMs)}</div>
+                      </div>
+                    </button>
+                  )
+                })
+              )}
+            </div>
+
+            <div className="memory-viewer">
+              {!selectedMemoryPath ? (
+                <div className="empty-state">
+                  <p>Select a file to view</p>
+                </div>
+              ) : memoryFileLoading && !selectedMemoryFile ? (
+                <div className="loading">
+                  <div className="spinner"></div>
+                  <p>Loading file…</p>
+                </div>
+              ) : selectedMemoryFile ? (
+                <>
+                  <div className="memory-viewer-header">
+                    <div className="memory-viewer-title">
+                      <h3>
+                        {selectedMemoryFile.path}
+                        {memoryDirty ? ' *' : ''}
+                      </h3>
+                      <span className="skills-count">
+                        {formatBytes(selectedMemoryFile.bytes)} • Updated {formatTimeAgo(selectedMemoryFile.mtimeMs)}
+                      </span>
+                    </div>
+                    <div className="header-actions">
+                      <a
+                        className="btn btn-secondary btn-sm"
+                        href={`/api/admin/memory/file/raw?path=${encodeURIComponent(selectedMemoryFile.path)}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        Open raw
+                      </a>
+                      <button
+                        className="btn btn-primary btn-sm"
+                        onClick={handleSaveMemory}
+                        disabled={!memoryDirty || memorySaveLoading || memoryFileLoading}
+                      >
+                        {memorySaveLoading && <ButtonSpinner />}
+                        {memorySaveLoading ? 'Saving…' : 'Save'}
+                      </button>
+                      <button
+                        className="btn btn-danger btn-sm"
+                        onClick={handleDeleteMemory}
+                        disabled={!selectedMemoryPath.startsWith('memory/') || memoryDeleteLoading || memorySaveLoading}
+                        title={selectedMemoryPath.startsWith('memory/') ? 'Delete file' : 'MEMORY.md cannot be deleted from the UI'}
+                      >
+                        {memoryDeleteLoading && <ButtonSpinner />}
+                        {memoryDeleteLoading ? 'Deleting…' : 'Delete'}
+                      </button>
+                    </div>
+                  </div>
+                  {selectedMemoryFile.truncated && (
+                    <p className="hint">
+                      Preview truncated (file is {formatBytes(selectedMemoryFile.bytes)}). Use “Open raw” for the full file.
+                    </p>
+                  )}
+                  <textarea
+                    className="memory-editor"
+                    value={memoryDraft}
+                    onChange={(e) => {
+                      setMemoryDraft(e.target.value)
+                      setMemoryDirty(true)
+                    }}
+                    spellCheck={false}
+                  />
+                </>
+              ) : (
+                <div className="empty-state">
+                  <p>Unable to load file</p>
+                </div>
               )}
             </div>
           </div>

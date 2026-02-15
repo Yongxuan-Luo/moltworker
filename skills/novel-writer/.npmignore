@@ -1,0 +1,68 @@
+# 源代码
+src/
+*.ts
+tsconfig.json
+
+# Git
+.git/
+.gitignore
+
+# 开发文件
+node_modules/
+*.log
+*.tmp
+.DS_Store
+
+# 其他目录（开发用）
+other/
+
+# 测试文件
+test/
+temp/
+*.test.js
+*.spec.js
+
+# 项目根目录的 AI 配置（开发/测试用，不发布）
+/.claude/
+/.gemini/
+/.cursor/
+/.windsurf/
+/.roocode/
+/.codex/
+/.specify/
+/stories/
+/spec/
+/memory/
+
+# 文档源文件（但保留模板）
+docs/
+
+# IDE配置
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 构建缓存
+.cache/
+tmp/
+
+# 不发布源命令文件（使用构建产物）
+templates/commands/
+scripts/build/
+
+# 不要排除的文件（显式包含）
+!templates/tracking/
+!templates/tracking/**/*
+!templates/knowledge/
+!templates/knowledge/**/*
+!templates/gemini-settings.json
+!templates/GEMINI.md
+!memory/
+!memory/**/*
+!scripts/bash/
+!scripts/bash/**/*
+!scripts/powershell/
+!scripts/powershell/**/*
+!dist/
+!dist/**/*

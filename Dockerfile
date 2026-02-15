@@ -35,7 +35,7 @@ RUN mkdir -p /root/.clawdbot \
 # Copy startup script
 # Cache-bust this layer when startup script changes (or when Windows CRLF sneaks in).
 # If you see "/bin/bash^M: bad interpreter" at runtime, bump this value and redeploy.
-ARG START_MOLTBOT_SH_CACHEBUST=2026-02-08-01
+ARG START_MOLTBOT_SH_CACHEBUST=2026-02-10-01
 COPY start-moltbot.sh /usr/local/bin/start-moltbot.sh
 RUN echo "$START_MOLTBOT_SH_CACHEBUST" > /usr/local/bin/.start-moltbot.sh-cachebust \
     && sed -i 's/\r$//' /usr/local/bin/start-moltbot.sh \

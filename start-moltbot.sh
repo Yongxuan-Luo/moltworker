@@ -136,6 +136,36 @@ if [ -d "$BACKUP_DIR/skills" ] && [ "$(ls -A $BACKUP_DIR/skills 2>/dev/null)" ];
     fi
 fi
 
+# Normalize legacy skill directory names (underscore -> hyphen) when only the legacy name exists.
+# This prevents mismatches where skill frontmatter uses hyphens but the folder uses underscores.
+rename_legacy_skill_dir_if_needed() {
+    local legacy="$1"
+    local canonical="$2"
+    if [ -d "$SKILLS_DIR/$legacy" ] && [ ! -d "$SKILLS_DIR/$canonical" ]; then
+        echo "Renaming legacy skill dir '$legacy' -> '$canonical'..."
+        mv "$SKILLS_DIR/$legacy" "$SKILLS_DIR/$canonical" 2>/dev/null || true
+    fi
+}
+rename_legacy_skill_dir_if_needed "novel_writer" "novel-writer"
+rename_legacy_skill_dir_if_needed "xiaohongshu_note_analyzer" "xiaohongshu-note-analyzer"
+
+# If legacy underscore-named skill folders exist alongside canonical hyphenated ones,
+# they can "shadow" the intended skill because Telegram commands are underscore-sanitized.
+# Preserve legacy copies but stash them under a dot-prefixed folder (pi-coding-agent skips dot dirs).
+LEGACY_SKILLS_DIR="$SKILLS_DIR/.legacy"
+mkdir -p "$LEGACY_SKILLS_DIR"
+SKILL_STASH_TS="$(date -u +"%Y%m%dT%H%M%SZ" 2>/dev/null || date +"%s")"
+stash_legacy_skill_dir_if_shadowing() {
+    local legacy="$1"
+    local canonical="$2"
+    if [ -d "$SKILLS_DIR/$legacy" ] && [ -d "$SKILLS_DIR/$canonical" ]; then
+        echo "Stashing legacy skill dir '$legacy' (canonical '$canonical' exists)..."
+        mv "$SKILLS_DIR/$legacy" "$LEGACY_SKILLS_DIR/${legacy}_${SKILL_STASH_TS}" 2>/dev/null || true
+    fi
+}
+stash_legacy_skill_dir_if_shadowing "novel_writer" "novel-writer"
+stash_legacy_skill_dir_if_shadowing "xiaohongshu_note_analyzer" "xiaohongshu-note-analyzer"
+
 # If config file still doesn't exist, create from template
 if [ ! -f "$CONFIG_FILE" ]; then
     echo "No existing config found, initializing from template..."
@@ -185,6 +215,66 @@ config.gateway = config.gateway || {};
 config.channels = config.channels || {};
 config.plugins = config.plugins || {};
 config.plugins.entries = config.plugins.entries || {};
+config.skills = config.skills || {};
+config.skills.load = config.skills.load || {};
+config.skills.load.extraDirs = Array.isArray(config.skills.load.extraDirs) ? config.skills.load.extraDirs : [];
+config.skills.entries = config.skills.entries || {};
+
+// Ensure the default workspace is present. If a restored config points at a missing workspace,
+// fall back to /root/clawd (where this image ships workspace skills).
+try {
+    const ws = typeof config.agents.defaults.workspace === 'string' ? config.agents.defaults.workspace.trim() : '';
+    const defaultWs = '/root/clawd';
+    if (!ws) {
+        config.agents.defaults.workspace = defaultWs;
+    } else if (!fs.existsSync(ws)) {
+        console.log(`Workspace path does not exist (${ws}); falling back to ${defaultWs}`);
+        config.agents.defaults.workspace = defaultWs;
+    }
+} catch {
+    config.agents.defaults.workspace = '/root/clawd';
+}
+
+// Always scan the image-shipped skills directory as an extra skills dir.
+// This makes workspace-added skills available even when the active workspace is a per-scope sandbox workspace.
+if (!config.skills.load.extraDirs.includes('/root/clawd/skills')) {
+    config.skills.load.extraDirs.push('/root/clawd/skills');
+}
+
+function migrateSkillEntryKey(from, to) {
+    const fromKey = typeof from === 'string' ? from.trim() : '';
+    const toKey = typeof to === 'string' ? to.trim() : '';
+    if (!fromKey || !toKey || fromKey === toKey) return;
+    if (!config.skills.entries[fromKey]) return;
+    if (config.skills.entries[toKey]) return;
+    config.skills.entries[toKey] = config.skills.entries[fromKey];
+    delete config.skills.entries[fromKey];
+    console.log(`Migrated skills.entries key: ${fromKey} -> ${toKey}`);
+}
+
+// Migrate legacy underscored skill names to canonical hyphenated folder names.
+migrateSkillEntryKey('xiaohongshu_note_analyzer', 'xiaohongshu-note-analyzer');
+migrateSkillEntryKey('novel_writer', 'novel-writer');
+
+// Ensure the XiaoHongShu note analyzer skill is enabled by default,
+// without overriding an explicit user disable.
+const xhsSkillKey = 'xiaohongshu-note-analyzer';
+config.skills.entries[xhsSkillKey] = config.skills.entries[xhsSkillKey] || {};
+if (!Object.prototype.hasOwnProperty.call(config.skills.entries[xhsSkillKey], 'enabled')) {
+    config.skills.entries[xhsSkillKey].enabled = true;
+}
+
+// Slash commands: enable text parsing and (Telegram) native registration by default.
+// This makes `/skill ...` (and per-skill commands) usable from Telegram without requiring
+// users to manually discover config flags.
+config.commands = config.commands || {};
+config.commands.text = true;
+if (!Object.prototype.hasOwnProperty.call(config.commands, 'native')) {
+    config.commands.native = 'auto';
+}
+if (!Object.prototype.hasOwnProperty.call(config.commands, 'nativeSkills')) {
+    config.commands.nativeSkills = 'auto';
+}
 
 function enableBundledPlugin(id) {
     if (!id) return;
@@ -239,6 +329,15 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
     config.channels.telegram = config.channels.telegram || {};
     config.channels.telegram.botToken = process.env.TELEGRAM_BOT_TOKEN;
     config.channels.telegram.enabled = true;
+    // Telegram UX: register native slash commands (so Telegram treats `/skill`, `/commands`, etc. as bot commands).
+    // This does not bypass command allowlists; it only makes commands discoverable in the client UI.
+    config.channels.telegram.commands = config.channels.telegram.commands || {};
+    if (!Object.prototype.hasOwnProperty.call(config.channels.telegram.commands, 'native')) {
+        config.channels.telegram.commands.native = true;
+    }
+    if (!Object.prototype.hasOwnProperty.call(config.channels.telegram.commands, 'nativeSkills')) {
+        config.channels.telegram.commands.nativeSkills = true;
+    }
     const telegramDmPolicy = process.env.TELEGRAM_DM_POLICY || 'pairing';
     config.channels.telegram.dmPolicy = telegramDmPolicy;
     if (process.env.TELEGRAM_DM_ALLOW_FROM) {
@@ -472,6 +571,121 @@ fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 console.log('Configuration updated successfully');
 console.log('Config:', JSON.stringify(config, null, 2));
 EOFNODE
+
+# ============================================================
+# PATCH CLAWDBOT: SKILL COMMANDS + TELEGRAM NATIVE COMMANDS
+# ============================================================
+# Telegram (and other chat UIs) often surface skill command names with "-" (skill name)
+# while the internal command name is sanitized to "_" (Telegram native command restriction).
+# Upstream currently matches direct "/skillname" commands strictly by entry.name, which
+# makes "/foo-bar" fail when the registered command is "/foo_bar".
+#
+# Telegram native commands also set CommandSource="native", which upstream uses to disable
+# text command parsing entirely. That breaks skill commands (and /skill) when invoked via
+# Telegram's command UI. We patch the upstream check so native commands still support text
+# command parsing when `commands.text` is enabled (default).
+#
+# Patch the installed clawdbot package in-place (idempotent) so direct skill commands use
+# the same normalization logic as "/skill <name> ...".
+echo "Patching clawdbot skill command behavior if needed..."
+set +e
+node <<'EOFPATCH'
+const fs = require('node:fs');
+const path = require('node:path');
+const childProcess = require('node:child_process');
+
+function resolveGlobalPackageDir(packageName) {
+  try {
+    const npmRoot = childProcess.execSync('npm root -g', { encoding: 'utf8' }).trim();
+    const candidate = path.join(npmRoot, packageName);
+    if (fs.existsSync(candidate)) return candidate;
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function patchSkillCommandsFile(packageDir) {
+  const filePath = path.join(packageDir, 'dist', 'auto-reply', 'skill-commands.js');
+  if (!fs.existsSync(filePath)) return { status: 'missing', filePath };
+
+  const marker = 'MOLTBOT_PATCH_SKILL_COMMAND_ALIASES_V1';
+  const needle =
+    'const command = params.skillCommands.find((entry) => entry.name.toLowerCase() === commandName);';
+
+  let content = '';
+  try {
+    content = fs.readFileSync(filePath, 'utf8');
+  } catch (error) {
+    return { status: 'read_failed', filePath, error };
+  }
+
+  if (content.includes(marker)) return { status: 'already_patched', filePath };
+  if (!content.includes(needle)) return { status: 'pattern_not_found', filePath };
+
+  const replacement = `// ${marker}: treat "-" and "_" equivalently for direct /skillname invocations.\n    const command = findSkillCommand(params.skillCommands, commandName);`;
+  const next = content.replace(needle, replacement);
+
+  try {
+    fs.writeFileSync(filePath, next, 'utf8');
+  } catch (error) {
+    return { status: 'write_failed', filePath, error };
+  }
+
+  return { status: 'patched', filePath };
+}
+
+function patchCommandsRegistryFile(packageDir) {
+  const filePath = path.join(packageDir, 'dist', 'auto-reply', 'commands-registry.js');
+  if (!fs.existsSync(filePath)) return { status: 'missing', filePath };
+
+  const marker = 'MOLTBOT_PATCH_NATIVE_COMMANDS_ALLOW_TEXT_V1';
+  const needle = 'if (params.commandSource === "native")\n        return false;';
+
+  let content = '';
+  try {
+    content = fs.readFileSync(filePath, 'utf8');
+  } catch (error) {
+    return { status: 'read_failed', filePath, error };
+  }
+
+  if (content.includes(marker)) return { status: 'already_patched', filePath };
+  if (!content.includes(needle)) return { status: 'pattern_not_found', filePath };
+
+  const replacement = `// ${marker}: allow text command parsing even for native-command updates (Telegram native commands).\n    // Command handlers still check authorization (CommandAuthorized/isAuthorizedSender).\n    // If you want to fully disable text commands, set config.commands.text = false.\n    `;
+  const next = content.replace(needle, replacement);
+
+  try {
+    fs.writeFileSync(filePath, next, 'utf8');
+  } catch (error) {
+    return { status: 'write_failed', filePath, error };
+  }
+
+  return { status: 'patched', filePath };
+}
+
+const packageNames = ['clawdbot', 'openclaw'];
+let didAnything = false;
+for (const packageName of packageNames) {
+  const dir = resolveGlobalPackageDir(packageName);
+  if (!dir) continue;
+
+  const results = [
+    { label: 'skill-commands', ...patchSkillCommandsFile(dir) },
+    { label: 'commands-registry', ...patchCommandsRegistryFile(dir) },
+  ];
+
+  for (const result of results) {
+    if (result.status === 'patched' || result.status === 'already_patched') didAnything = true;
+    console.log(`[patch] ${packageName} ${result.label}: ${result.status} (${result.filePath})`);
+    if (result.error) console.log(`[patch] ${packageName} ${result.label}: ${String(result.error)}`);
+  }
+}
+if (!didAnything) {
+  console.log('[patch] No global clawdbot/openclaw install found or patch not applicable.');
+}
+EOFPATCH
+set -e
 
 # ============================================================
 # START GATEWAY

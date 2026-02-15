@@ -101,10 +101,37 @@ async function apiRequest<T>(path: string, options: globalThis.RequestInit = {})
     throw new AuthError('Unauthorized - please log in via Cloudflare Access');
   }
 
-  const data = (await response.json()) as T & { error?: string };
+  const contentType = response.headers.get('content-type') || '';
+  const expectsJson = contentType.includes('application/json') || contentType.includes('+json') || contentType === '';
+
+  let data: (T & { error?: string; message?: string }) | null = null;
+  let rawText: string | null = null;
+
+  try {
+    if (expectsJson) {
+      data = (await response.json()) as T & { error?: string; message?: string };
+    } else {
+      rawText = await response.text();
+    }
+  } catch {
+    try {
+      rawText = await response.text();
+    } catch {
+      rawText = null;
+    }
+  }
 
   if (!response.ok) {
-    throw new Error(data.error || `API error: ${response.status}`);
+    const message =
+      (data && (data.error || data.message)) ||
+      (rawText ? rawText.slice(0, 500) : null) ||
+      `API error: ${response.status}`;
+    throw new Error(message);
+  }
+
+  if (data === null) {
+    const preview = rawText ? rawText.slice(0, 200) : '';
+    throw new Error(`Expected JSON but got ${contentType || 'non-JSON'} response. ${preview}`.trim());
   }
 
   return data;
@@ -285,5 +312,86 @@ export async function setSkillEnabled(skillKey: string, enabled: boolean): Promi
   return apiRequest<SkillEnabledResponse>(`/skills/${encodeURIComponent(skillKey)}/enabled`, {
     method: 'POST',
     body: JSON.stringify({ enabled }),
+  });
+}
+
+export type MemoryFileKind = 'root' | 'memory';
+
+export interface MemoryFileEntry {
+  /** "MEMORY.md" or "memory/<path>.md" */
+  path: string;
+  kind: MemoryFileKind;
+  bytes: number;
+  mtimeMs: number;
+}
+
+export interface MemoryFilesResponse {
+  workspaceDir: string;
+  memoryDir: string;
+  files: MemoryFileEntry[];
+}
+
+export interface MemoryFileResponse {
+  workspaceDir: string;
+  path: string;
+  kind: MemoryFileKind;
+  bytes: number;
+  mtimeMs: number;
+  content: string;
+  truncated: boolean;
+}
+
+export async function listMemoryFiles(): Promise<MemoryFilesResponse> {
+  return apiRequest<MemoryFilesResponse>('/memory/files');
+}
+
+export async function getMemoryFile(path: string): Promise<MemoryFileResponse> {
+  return apiRequest<MemoryFileResponse>(`/memory/file?path=${encodeURIComponent(path)}`);
+}
+
+export interface MemoryWriteResponse {
+  workspaceDir?: string;
+  path?: string;
+  kind?: MemoryFileKind;
+  bytes?: number;
+  mtimeMs?: number;
+  error?: string;
+  details?: string;
+}
+
+export async function saveMemoryFile(path: string, content: string): Promise<MemoryWriteResponse> {
+  return apiRequest<MemoryWriteResponse>('/memory/file', {
+    method: 'POST',
+    body: JSON.stringify({ path, content }),
+  });
+}
+
+export interface MemoryDeleteResponse {
+  ok?: boolean;
+  error?: string;
+  details?: string;
+}
+
+export async function deleteMemoryFile(path: string): Promise<MemoryDeleteResponse> {
+  return apiRequest<MemoryDeleteResponse>(`/memory/file?path=${encodeURIComponent(path)}`, {
+    method: 'DELETE',
+  });
+}
+
+export interface MemoryImportResponse {
+  ok?: boolean;
+  dryRun?: boolean;
+  mode?: 'overwrite' | 'merge';
+  deleted?: string[];
+  wrote?: string[];
+  totalBytes?: number;
+  error?: string;
+  details?: unknown;
+}
+
+export async function importMemoryJson(data: unknown, mode: 'overwrite' | 'merge'): Promise<MemoryImportResponse> {
+  return apiRequest<MemoryImportResponse>('/memory/import', {
+    method: 'POST',
+    body: JSON.stringify({ mode, data }),
   });
 }
